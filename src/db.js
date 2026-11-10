@@ -83,6 +83,22 @@ CREATE TABLE IF NOT EXISTS document_users (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   PRIMARY KEY (document_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS document_seen (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, document_id)
+);
+CREATE TABLE IF NOT EXISTS document_signers (
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  signed_at TEXT,
+  PRIMARY KEY (document_id, user_id)
+);
 `);
 
 function tx(fn) {

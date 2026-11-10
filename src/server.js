@@ -5,6 +5,8 @@ const crypto = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
 const Fastify = require('fastify');
 const { db, tx, hashPassword, checkPassword, UPLOAD_DIR } = require('./db');
+const mail = require('./mail');
+const backup = require('./backup');
 
 const PORT = Number(process.env.PORT) || 3080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -45,8 +47,9 @@ function accessClause(user) {
   return {
     sql: `(d.visibility = 'all' OR d.created_by = ?
       OR EXISTS (SELECT 1 FROM document_users x WHERE x.document_id = d.id AND x.user_id = ?)
+      OR EXISTS (SELECT 1 FROM document_signers x WHERE x.document_id = d.id AND x.user_id = ?)
       OR EXISTS (SELECT 1 FROM document_units x WHERE x.document_id = d.id AND x.unit_id IN (${marks})))`,
-    params: [user.id, user.id, ...chain],
+    params: [user.id, user.id, user.id, ...chain],
   };
 }
 const canEdit = (user, doc) => user.role === 'admin' || (user.role === 'editor' && doc.created_by === user.id);
@@ -66,7 +69,7 @@ async function requireUser(req) {
   const user = sid
     ? db
         .prepare(
-          `SELECT u.id, u.username, u.full_name, u.position, u.email, u.unit_id, u.role, u.must_change
+          `SELECT u.id, u.username, u.full_name, u.position, u.email, u.unit_id, u.role, u.must_change, u.created_at
            FROM sessions s JOIN users u ON u.id = s.user_id
            WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1`
         )
@@ -146,6 +149,7 @@ function readDoc(data) {
     tagIds: exists('tags', idList(data.tagIds)),
     unitIds: visibility === 'restricted' ? exists('units', idList(data.unitIds)) : [],
     userIds: visibility === 'restricted' ? exists('users', idList(data.userIds)) : [],
+    signerIds: exists('users', idList(data.signerIds)),
     removeFileIds: idList(data.removeFileIds),
   };
 }
@@ -193,6 +197,21 @@ function saveDocLinks(id, doc, saved) {
   doc.unitIds.forEach((x) => u.run(id, x));
   doc.userIds.forEach((x) => p.run(id, x));
   saved.forEach((x) => f.run(id, x.name, x.stored, x.size));
+  // Semnatarii rămași își păstrează starea; întoarcem doar pe cei nou adăugați, pentru notificare.
+  const current = db.prepare('SELECT user_id FROM document_signers WHERE document_id = ?').all(id).map((r) => r.user_id);
+  const delSigner = db.prepare('DELETE FROM document_signers WHERE document_id = ? AND user_id = ?');
+  const addSigner = db.prepare('INSERT INTO document_signers (document_id, user_id) VALUES (?, ?)');
+  current.filter((x) => !doc.signerIds.includes(x)).forEach((x) => delSigner.run(id, x));
+  const added = doc.signerIds.filter((x) => !current.includes(x));
+  added.forEach((x) => addSigner.run(id, x));
+  return added;
+}
+
+async function notifySigners(req, docId, userIds) {
+  if (!userIds.length) return null;
+  const doc = db.prepare('SELECT id, title, number, doc_date FROM documents WHERE id = ?').get(docId);
+  const q = db.prepare('SELECT full_name, email FROM users WHERE id = ? AND active = 1');
+  return mail.sendSignRequests(doc, userIds.map((id) => q.get(id)).filter(Boolean), `${req.protocol}://${req.host}`);
 }
 
 function listDocuments(user, onlyId) {
@@ -200,24 +219,42 @@ function listDocuments(user, onlyId) {
   const rows = db
     .prepare(
       `SELECT d.id, d.title, d.number, d.doc_date, d.description, d.visibility, d.created_by, d.created_at,
-              a.full_name AS author
+              a.full_name AS author,
+              EXISTS (SELECT 1 FROM document_seen s WHERE s.document_id = d.id AND s.user_id = ?) AS seen
        FROM documents d LEFT JOIN users a ON a.id = d.created_by
        WHERE ${acc.sql} ${onlyId ? 'AND d.id = ?' : ''}
        ORDER BY d.doc_date DESC, d.id DESC`
     )
-    .all(...acc.params, ...(onlyId ? [onlyId] : []));
+    .all(user.id, ...acc.params, ...(onlyId ? [onlyId] : []));
+  const signers = db.prepare(
+    'SELECT s.user_id AS id, u.full_name AS name, s.signed_at FROM document_signers s JOIN users u ON u.id = s.user_id WHERE s.document_id = ? ORDER BY u.full_name'
+  );
   const tags = db.prepare('SELECT tag_id FROM document_tags WHERE document_id = ?');
   const units = db.prepare('SELECT unit_id FROM document_units WHERE document_id = ?');
   const users = db.prepare('SELECT user_id FROM document_users WHERE document_id = ?');
   const files = db.prepare('SELECT id, name, size FROM document_files WHERE document_id = ? ORDER BY id');
-  return rows.map((d) => ({
+  return rows.map(({ seen, ...d }) => {
+    const sig = signers.all(d.id);
+    const mine = sig.find((s) => s.id === user.id);
+    return {
     ...d,
+    signers: sig,
+    mySign: mine ? (mine.signed_at ? 'signed' : 'pending') : null,
+    // „nevăzut” = document al altcuiva, apărut după crearea contului și încă nedeschis
+    unseen: !seen && d.created_by !== user.id && d.created_at >= user.created_at,
     tagIds: tags.all(d.id).map((r) => r.tag_id),
     unitIds: units.all(d.id).map((r) => r.unit_id),
     userIds: users.all(d.id).map((r) => r.user_id),
     files: files.all(d.id),
     canEdit: canEdit(user, d),
-  }));
+    };
+  });
+}
+
+const markSeen = (userId, docId) => db.prepare('INSERT OR IGNORE INTO document_seen (user_id, document_id) VALUES (?, ?)').run(userId, docId);
+function accessibleDoc(user, id) {
+  const acc = accessClause(user);
+  return db.prepare(`SELECT d.id, d.created_by FROM documents d WHERE d.id = ? AND ${acc.sql}`).get(id, ...acc.params);
 }
 
 const INLINE_TYPES = { '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
@@ -280,7 +317,7 @@ app.register(async (app) => {
     return { ok: true };
   });
 
-  app.get('/api/me', { preHandler: requireUser, config: { allowMustChange: true } }, async (req) => req.user);
+  app.get('/api/me', { preHandler: requireUser, config: { allowMustChange: true } }, async (req) => ({ ...req.user, mailEnabled: mail.enabled() }));
 
   app.post('/api/password', { preHandler: requireUser, config: { allowMustChange: true } }, async (req) => {
     const row = db.prepare('SELECT pass_hash FROM users WHERE id = ?').get(req.user.id);
@@ -419,14 +456,13 @@ app.register(async (app) => {
   app.post('/api/documents', { preHandler: requireEditor }, async (req) => {
     const { doc, saved } = await readDocForm(req);
     try {
-      const id = tx(() => {
+      const { id, added } = tx(() => {
         const r = db
           .prepare('INSERT INTO documents (title, number, doc_date, description, visibility, created_by) VALUES (?, ?, ?, ?, ?, ?)')
           .run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, req.user.id);
-        saveDocLinks(lastId(r), doc, saved);
-        return lastId(r);
+        return { id: lastId(r), added: saveDocLinks(lastId(r), doc, saved) };
       });
-      return { id };
+      return { id, mail: await notifySigners(req, id, added) };
     } catch (e) {
       removeStored(saved.map((f) => f.stored));
       throw e;
@@ -444,6 +480,7 @@ app.register(async (app) => {
     }
     const { doc, saved } = await readDocForm(req);
     let removed = [];
+    let added = [];
     try {
       tx(() => {
         db.prepare("UPDATE documents SET title = ?, number = ?, doc_date = ?, description = ?, visibility = ?, updated_at = datetime('now') WHERE id = ?").run(
@@ -458,14 +495,100 @@ app.register(async (app) => {
             del.run(fid, id);
           }
         }
-        saveDocLinks(id, doc, saved);
+        added = saveDocLinks(id, doc, saved);
       });
     } catch (e) {
       removeStored(saved.map((f) => f.stored));
       throw e;
     }
     removeStored(removed);
+    return { ok: true, mail: await notifySigners(req, id, added) };
+  });
+
+  // --- notificări: documente nevăzute și semnături ---
+  app.post('/api/documents/seen-all', { preHandler: requireUser }, async (req) => {
+    const acc = accessClause(req.user);
+    db.prepare(`INSERT OR IGNORE INTO document_seen (user_id, document_id) SELECT ?, d.id FROM documents d WHERE ${acc.sql}`).run(req.user.id, ...acc.params);
     return { ok: true };
+  });
+  app.post('/api/documents/:id/seen', { preHandler: requireUser }, async (req) => {
+    const doc = accessibleDoc(req.user, Number(req.params.id));
+    if (!doc) throw fail(404, 'Documentul nu a fost găsit.');
+    markSeen(req.user.id, doc.id);
+    return { ok: true };
+  });
+  app.post('/api/documents/:id/sign', { preHandler: requireUser }, async (req) => {
+    const id = Number(req.params.id);
+    const r = db
+      .prepare("UPDATE document_signers SET signed_at = datetime('now') WHERE document_id = ? AND user_id = ? AND signed_at IS NULL")
+      .run(id, req.user.id);
+    if (!r.changes) throw fail(404, 'Nu aveți o semnătură în așteptare pentru acest document.');
+    markSeen(req.user.id, id);
+    return { ok: true };
+  });
+  app.post('/api/documents/:id/remind', { preHandler: requireEditor }, async (req) => {
+    const id = Number(req.params.id);
+    const old = db.prepare('SELECT id, created_by FROM documents WHERE id = ?').get(id);
+    if (!old || !canEdit(req.user, old)) throw fail(404, 'Documentul nu a fost găsit.');
+    const pending = db.prepare('SELECT user_id FROM document_signers WHERE document_id = ? AND signed_at IS NULL').all(id).map((r) => r.user_id);
+    if (!pending.length) throw fail(400, 'Toți semnatarii au semnat deja.');
+    return { mail: await notifySigners(req, id, pending) };
+  });
+
+  // --- setări (admin): păstrate în baza de date, deci rămân la actualizarea aplicației ---
+  const publicSettings = () => {
+    const { smtp_pass, ...s } = mail.getSettings();
+    return { ...s, has_password: !!smtp_pass };
+  };
+  app.get('/api/admin/settings', { preHandler: requireAdmin }, async () => publicSettings());
+  app.put('/api/admin/settings', { preHandler: requireAdmin }, async (req) => {
+    const b = req.body || {};
+    const port = str(b.smtp_port, 5);
+    if (port && !(Number(port) >= 1 && Number(port) <= 65535)) throw fail(400, 'Portul SMTP trebuie să fie între 1 și 65535.');
+    const app_url = str(b.app_url, 200);
+    if (app_url && !/^https?:\/\/[^\s]+$/.test(app_url)) throw fail(400, 'Adresa aplicației trebuie să înceapă cu http:// sau https://.');
+    const values = {
+      smtp_host: str(b.smtp_host, 200),
+      smtp_port: port,
+      smtp_secure: b.smtp_secure === 'tls' ? 'tls' : '',
+      smtp_user: str(b.smtp_user, 200),
+      smtp_from: str(b.smtp_from, 200),
+      app_url,
+    };
+    // parola nu este trimisă niciodată înapoi către browser; se schimbă doar dacă este completată
+    if (b.clear_password) values.smtp_pass = '';
+    else if (b.smtp_pass) values.smtp_pass = String(b.smtp_pass).slice(0, 500);
+    tx(() => mail.saveSettings(values));
+    return publicSettings();
+  });
+  app.post('/api/admin/settings/test', { preHandler: requireAdmin }, async (req) => {
+    const to = str(req.body?.to, 200);
+    if (!/^[^\s@]+@[^\s@]+$/.test(to)) throw fail(400, 'Introduceți adresa de e-mail pentru test.');
+    if (!mail.enabled()) throw fail(400, 'Completați și salvați mai întâi serverul SMTP.');
+    try {
+      await mail.sendTest(to);
+    } catch (e) {
+      throw fail(400, 'E-mailul nu a putut fi trimis: ' + e.message);
+    }
+    return { ok: true };
+  });
+
+  // --- copie de rezervă completă (admin) ---
+  app.get('/api/admin/export', { preHandler: requireAdmin }, async (req, reply) => {
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
+    reply.type('application/octet-stream').header('Content-Disposition', `attachment; filename="ansc-backup-${stamp}.anscbackup"`);
+    return reply.send(backup.createExportStream());
+  });
+  // Corpul cererii este chiar arhiva, citită ca flux (poate avea mulți GB).
+  app.addContentTypeParser('application/octet-stream', (req, payload, done) => done(null, payload));
+  app.post('/api/admin/import', { preHandler: requireAdmin, bodyLimit: 1024 ** 4 }, async (req) => {
+    if (!req.body || typeof req.body.pipe !== 'function') throw fail(400, 'Încărcați fișierul de backup.');
+    try {
+      return await backup.importArchive(req.body);
+    } catch (e) {
+      req.log.warn(e);
+      throw fail(400, e.expose ? e.message : 'Arhiva este deteriorată sau nu este un backup e-Management ANSC. Nimic nu a fost modificat.');
+    }
   });
 
   app.delete('/api/documents/:id', { preHandler: requireEditor }, async (req) => {
@@ -481,10 +604,11 @@ app.register(async (app) => {
   app.get('/api/files/:id', { preHandler: requireUser }, async (req, reply) => {
     const acc = accessClause(req.user);
     const f = db
-      .prepare(`SELECT f.name, f.stored FROM document_files f JOIN documents d ON d.id = f.document_id WHERE f.id = ? AND ${acc.sql}`)
+      .prepare(`SELECT f.name, f.stored, f.document_id FROM document_files f JOIN documents d ON d.id = f.document_id WHERE f.id = ? AND ${acc.sql}`)
       .get(Number(req.params.id), ...acc.params);
     const file = f && path.join(UPLOAD_DIR, f.stored);
     if (!f || !fs.existsSync(file)) throw fail(404, 'Fișierul nu a fost găsit.');
+    markSeen(req.user.id, f.document_id); // deschiderea unui fișier înseamnă că documentul a fost văzut
     // doar PDF și imaginile se deschid în browser; restul se descarcă
     const inline = INLINE_TYPES[path.extname(f.name).toLowerCase()];
     reply
