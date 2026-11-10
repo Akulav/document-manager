@@ -183,3 +183,65 @@ tr.off td { color: var(--muted); }
   .vis-cols, .row { grid-template-columns: 1fr; flex-direction: column; }
   .userbox .name { display: none; }
 }
+
+/* ---------- finisaje ---------- */
+body { -webkit-font-smoothing: antialiased; background: linear-gradient(180deg, #eef2f7 0, #f3f5f8 320px) fixed; }
+::selection { background: #cfe0f5; }
+.card { box-shadow: 0 1px 2px rgba(16,24,40,.05); }
+.btn { transition: background .12s, border-color .12s, box-shadow .12s, transform .05s; }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn.primary { box-shadow: 0 1px 2px rgba(22,60,106,.35); }
+.btn.link:hover { background: var(--accent-soft); border-radius: 6px; }
+.btn.link.danger:hover { background: #fef3f2; }
+.btn.link:disabled { color: #b6bcc6; background: none; }
+input, select, textarea { transition: border-color .12s, box-shadow .12s; }
+input:hover, select:hover, textarea:hover { border-color: #c3cad6; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(29,78,137,.15); }
+h1 { letter-spacing: -.2px; }
+
+.topbar { position: sticky; top: 0; z-index: 20; background: linear-gradient(90deg, #163c6a, #1d4e89 55%, #245f9f); box-shadow: 0 1px 0 rgba(0,0,0,.12), 0 4px 14px rgba(16,24,40,.12); }
+.nav { flex-wrap: wrap; }
+.nav a { transition: background .12s, color .12s; font-size: 14.5px; }
+.nav a.sep { margin-left: 10px; position: relative; }
+.nav a.sep::before { content: ""; position: absolute; left: -8px; top: 8px; bottom: 8px; width: 1px; background: rgba(255,255,255,.28); }
+.side { top: 78px; }
+
+.doc { transition: box-shadow .15s, border-color .15s; }
+.doc:hover { border-color: #c9d3e0; box-shadow: 0 4px 14px rgba(16,24,40,.08); }
+.doc-date b { font-variant-numeric: tabular-nums; }
+.month { display: flex; align-items: center; gap: 12px; }
+.month::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.empty { border-style: dashed; }
+.side-item { transition: background .1s; }
+
+.file { transition: border-color .12s, background .12s; max-width: 100%; }
+.file:hover { background: #fff; }
+.file .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.ext { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .3px; padding: 1px 5px; border-radius: 4px; color: #fff; background: #667085; }
+.ext.pdf { background: #c8372d; } .ext.doc { background: #2b62b8; } .ext.xls { background: #1e7b4b; } .ext.img { background: #8a4fc7; } .ext.sig { background: #b7791f; }
+
+/* lanțul de semnare */
+.signbox { display: block; padding: 10px 12px; }
+.sign-head { display: flex; align-items: center; gap: 10px; }
+.sign-head .btn { margin-left: auto; }
+.chain, .signorder { list-style: none; margin: 8px 0 0; padding: 0; }
+.chain li { display: flex; gap: 10px; padding: 4px 0; color: #5b6472; }
+.chain li.ok { color: #05603a; }
+.chain li.turn { color: #7a4b00; }
+.step { flex: 0 0 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: #e4e7ec; color: #475467; }
+.chain li.ok .step { background: #12b76a; color: #fff; }
+.chain li.turn .step { background: #f79009; color: #fff; }
+.chain .files { margin-top: 4px; }
+.myturn { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: #fff; border: 1px solid #f5d490; color: var(--text); }
+.myturn .files { align-items: center; }
+.signorder li { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px dashed var(--border); }
+.signorder .fname { flex: 1; min-width: 0; }
+
+.overlay { animation: fade .15s ease-out; backdrop-filter: blur(2px); }
+.modal { animation: rise .18s ease-out; }
+.toast { animation: rise .18s ease-out; }
+tbody tr:hover td { background: #fafbfd; }
+@keyframes fade { from { opacity: 0; } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+.toast { transform: none; left: 0; right: 0; margin: 0 auto; width: fit-content; max-width: min(92vw, 640px); }
+@media (prefers-reduced-motion: reduce) { .overlay, .modal, .toast { animation: none; } .btn, .doc, input { transition: none; } }

@@ -127,7 +127,11 @@ async function parseArchive(src, stage) {
     }
     if (!Number.isSafeInteger(obj.size) || obj.size < 0) throw bad('Arhivă invalidă.');
     cur = { name: String(obj.name), remaining: obj.size, hash: crypto.createHash('sha256') };
-    if (cur.name === 'db.json' && !dbJson) cur.parts = [];
+    if (cur.name === 'db.json' && !dbJson) {
+      // db.json este ținut în memorie; o arhivă falsă nu trebuie să poată epuiza memoria serverului
+      if (cur.remaining > 512 * 1024 * 1024) throw bad('Arhivă invalidă.');
+      cur.parts = [];
+    }
     else if (cur.name.startsWith('files/') && STORED.test(cur.name.slice(6)) && !files.has(cur.name.slice(6))) {
       cur.out = fs.createWriteStream(path.join(stage, cur.name.slice(6)));
     } else throw bad('Arhivă invalidă: intrare neașteptată.');

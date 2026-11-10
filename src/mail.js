@@ -52,10 +52,11 @@ async function sendSignRequests(doc, users, origin) {
           subject: `Document de semnat: ${doc.title}`,
           text:
             `Bună ziua, ${u.full_name},\n\n` +
-            `Aveți un document care așteaptă semnătura dvs. în sistemul e-Management ANSC:\n\n` +
+            `Este rândul dvs. să semnați un document în sistemul e-Management ANSC:\n\n` +
             `  ${doc.title}${doc.number ? ' (nr. ' + doc.number + ')' : ''}\n` +
             `  Data documentului: ${date}\n\n` +
-            `Deschideți ${url}/#notificari pentru a-l vedea și a confirma semnarea.\n\n` +
+            `Pași: deschideți ${url}/#notificari, descărcați versiunea curentă a documentului,\n` +
+            `semnați-o digital și încărcați fișierul semnat în aceeași înregistrare.\n\n` +
             `Acest mesaj a fost generat automat.`,
         });
         out.sent.push(u.full_name);

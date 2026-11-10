@@ -1,4 +1,5 @@
-import { createApp, reactive } from 'vue';
+// Importat direct (fără import map), ca politica CSP să poată interzice orice script inline.
+import { createApp, reactive } from '/vendor/vue.js';
 
 // ---------- stare comună ----------
 const store = reactive({
@@ -166,7 +167,7 @@ const PasswordFields = {
   props: { modelValue: Object },
   template: /*html*/ `
     <label class="field"><span>Parola curentă</span><input v-model="modelValue.current" type="password" autocomplete="current-password" required /></label>
-    <label class="field"><span>Parola nouă (cel puțin 8 caractere)</span><input v-model="modelValue.next" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <label class="field"><span>Parola nouă (cel puțin 10 caractere)</span><input v-model="modelValue.next" type="password" autocomplete="new-password" minlength="10" required /></label>
     <label class="field"><span>Repetați parola nouă</span><input v-model="modelValue.again" type="password" autocomplete="new-password" required /></label>`,
 };
 async function changePassword(f) {
@@ -203,7 +204,7 @@ const docMon = (d) => MONTHS[Number(d.doc_date.slice(5, 7)) - 1].slice(0, 3) + '
 function visLabel(d) {
   if (d.visibility === 'all') return 'Toți angajații';
   const names = [...d.unitIds.map(unitName), ...d.userIds.map((id) => (store.users.find((u) => u.id === id) || {}).full_name || '—')];
-  return names.length ? 'Vizibil pentru: ' + names.join(', ') : 'Privat (autor și administratori)';
+  return names.length ? 'Vizibil pentru: ' + names.join(', ') : d.signers.length ? 'Privat (autor, semnatari și administratori)' : 'Privat (autor și administratori)';
 }
 // Textul de avertizare când notificarea prin e-mail nu a ajuns la toți semnatarii ('' = totul în regulă).
 function mailNote(m) {
@@ -248,15 +249,17 @@ const DocForm = {
     people() {
       return this.match(this.userFilter, this.form.userIds);
     },
-    signPeople() {
-      return this.match(this.signFilter, this.form.signerIds);
+    signCandidates() {
+      const q = this.signFilter.trim().toLowerCase();
+      return store.users.filter((u) => !this.form.signerIds.includes(u.id) && (!q || u.full_name.toLowerCase().includes(q)));
     },
+    // versiunile semnate fac parte din lanțul de semnare și nu se pot elimina de aici
     keptFiles() {
-      return this.doc ? this.doc.files.filter((f) => !this.form.removeFileIds.includes(f.id)) : [];
+      return this.doc ? this.doc.files.filter((f) => !f.signed_by_name && !this.form.removeFileIds.includes(f.id)) : [];
     },
     mailHint() {
       return store.me.mailEnabled
-        ? 'Semnatarii nou adăugați primesc un e-mail și o notificare în aplicație. Ei văd documentul indiferent de setările de vizibilitate.'
+        ? 'Persoana aflată la rând primește un e-mail și o notificare în aplicație. Semnatarii văd documentul indiferent de setările de vizibilitate.'
         : 'E-mailul nu este configurat (administratorul îl setează în pagina „Setări”): semnatarii vor fi anunțați doar în aplicație.';
     },
   },
@@ -270,6 +273,17 @@ const DocForm = {
       const i = list.indexOf(id);
       if (i < 0) list.push(id);
       else list.splice(i, 1);
+    },
+    personName(id) {
+      const u = store.users.find((x) => x.id === id) || (this.doc && this.doc.signers.find((s) => s.id === id));
+      return u ? u.full_name || u.name : '—';
+    },
+    hasSigned(id) {
+      return !!this.doc && this.doc.signers.some((s) => s.id === id && s.signed_at);
+    },
+    move(i, step) {
+      const list = this.form.signerIds;
+      list.splice(i + step, 0, list.splice(i, 1)[0]);
     },
     tagStyle(c, t) {
       return this.form.tagIds.includes(t.id) ? { background: c.color, borderColor: c.color } : { borderColor: c.color, color: c.color };
@@ -372,50 +386,113 @@ const DocForm = {
           </div>
 
           <div class="section-title" style="margin-top:18px">Semnare</div>
-          <label class="check"><input type="checkbox" v-model="needsSign" /> Documentul așteaptă să fie semnat</label>
+          <label class="check"><input type="checkbox" v-model="needsSign" /> Documentul trebuie semnat digital, pe rând</label>
           <div v-if="needsSign" class="vis-box">
-            <b class="small">Cine trebuie să semneze</b>
-            <input v-model="signFilter" placeholder="Caută după nume…" style="margin-top:6px" />
-            <div class="scroll">
-              <label v-for="u in signPeople" :key="u.id" class="check">
-                <input type="checkbox" :checked="form.signerIds.includes(u.id)" @change="toggle(form.signerIds, u.id)" /> {{ u.full_name }}
-                <span v-if="!u.email" class="muted small">(fără e-mail)</span>
-              </label>
+            <b class="small">Ordinea semnării</b>
+            <div v-if="!form.signerIds.length" class="muted small" style="margin-top:4px">Adăugați semnatarii din lista de mai jos, în ordinea în care trebuie să semneze.</div>
+            <ol class="signorder">
+              <li v-for="(id, i) in form.signerIds" :key="id">
+                <span class="step">{{ i + 1 }}</span>
+                <span class="fname">{{ personName(id) }} <span v-if="hasSigned(id)" class="muted small">(a semnat)</span></span>
+                <button type="button" class="btn link" :disabled="i === 0" @click="move(i, -1)" aria-label="Mută mai sus">↑</button>
+                <button type="button" class="btn link" :disabled="i === form.signerIds.length - 1" @click="move(i, 1)" aria-label="Mută mai jos">↓</button>
+                <button type="button" class="btn link danger" :disabled="hasSigned(id)" @click="form.signerIds.splice(i, 1)">Elimină</button>
+              </li>
+            </ol>
+            <input v-model="signFilter" placeholder="Adaugă semnatar: caută după nume…" style="margin-top:6px" />
+            <div class="scroll" style="max-height:130px">
+              <button v-for="u in signCandidates" :key="u.id" type="button" class="side-item" @click="form.signerIds.push(u.id)">
+                <span>+ {{ u.full_name }} <span v-if="!u.email" class="muted small">(fără e-mail)</span></span>
+              </button>
             </div>
-            <p class="muted small" style="margin:8px 0 0">{{ mailHint }}</p>
+            <p class="muted small" style="margin:8px 0 0">Fiecare semnatar descarcă versiunea curentă, o semnează digital și o încarcă înapoi; apoi vine rândul următorului. {{ mailHint }}</p>
           </div>
         </div>
       </div>
     </Modal>`,
 };
 
+const EXT_KIND = { pdf: 'pdf', doc: 'doc', docx: 'doc', odt: 'doc', rtf: 'doc', xls: 'xls', xlsx: 'xls', csv: 'xls', png: 'img', jpg: 'img', jpeg: 'img', p7s: 'sig', asice: 'sig', sig: 'sig' };
+const FileLink = {
+  props: { file: Object },
+  emits: ['open'],
+  computed: {
+    ext() {
+      const m = /\.([a-z0-9]{1,5})$/i.exec(this.file.name);
+      return m ? m[1].toLowerCase() : 'fișier';
+    },
+    kind() {
+      return EXT_KIND[this.ext] || 'other';
+    },
+  },
+  methods: { fmtSize },
+  template: /*html*/ `
+    <a class="file" :href="'/api/files/' + file.id" target="_blank" rel="noopener" @click="$emit('open')">
+      <span class="ext" :class="kind">{{ ext }}</span><span class="fname">{{ file.name }}</span><span class="muted small">{{ fmtSize(file.size) }}</span>
+    </a>`,
+};
+
+// Datele din baza de date sunt în UTC ('AAAA-LL-ZZ OO:MM:SS'); le afișăm în ora locală.
+const fmtDateTime = (s) => new Date(s.replace(' ', 'T') + 'Z').toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' });
+
 const DocCard = {
+  components: { FileLink },
   props: { doc: Object },
   emits: ['edit'],
+  data: () => ({ busy: false }),
   computed: {
     tags: () => tagIndex(),
     pending() {
       return this.doc.signers.filter((s) => !s.signed_at).length;
     },
+    originals() {
+      return this.doc.files.filter((f) => !f.signed_by_name);
+    },
+    // Versiunea care trebuie semnată acum: fișierele ultimului semnatar sau, dacă nu a semnat nimeni, originalele.
+    latest() {
+      const signed = this.doc.files.filter((f) => f.signed_by_name);
+      if (!signed.length) return this.originals;
+      const last = signed[signed.length - 1];
+      return signed.filter((f) => f.signed_by === last.signed_by && f.created_at === last.created_at);
+    },
   },
   methods: {
     chipStyle,
-    fmtSize,
     docDay,
     docMon,
     visLabel,
+    fmtDateTime,
+    signedFiles(userId) {
+      return this.doc.files.filter((f) => f.signed_by_name && f.signed_by === userId);
+    },
     // serverul marchează documentul ca văzut când se deschide un fișier; reîmprospătăm lista puțin mai târziu
     opened() {
       if (this.doc.unseen) setTimeout(() => loadDocs().catch(() => {}), 800);
     },
-    act(url, msg) {
-      return run(async () => {
-        await api(url, { method: 'POST' });
+    markSeen() {
+      run(async () => {
+        await api('/api/documents/' + this.doc.id + '/seen', { method: 'POST' });
         await loadDocs();
-      }, msg);
+      });
     },
-    sign() {
-      if (confirm('Confirmați că ați semnat documentul „' + this.doc.title + '”?')) this.act('/api/documents/' + this.doc.id + '/sign', 'Semnarea a fost confirmată.');
+    async uploadSigned(e) {
+      const files = [...e.target.files];
+      e.target.value = '';
+      if (!files.length) return;
+      const names = files.map((f) => f.name).join(', ');
+      if (!confirm('Încărcați „' + names + '” ca versiune semnată de dvs.? După încărcare, documentul trece la următorul semnatar.')) return;
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      this.busy = true;
+      try {
+        const r = await api('/api/documents/' + this.doc.id + '/sign', { method: 'POST', form: fd });
+        const note = mailNote(r.mail);
+        toast(note || 'Versiunea semnată a fost încărcată.', !!note);
+        await loadDocs();
+      } catch (err) {
+        toast(err.message, true);
+      }
+      this.busy = false;
     },
     async remind() {
       try {
@@ -443,18 +520,38 @@ const DocCard = {
           {{ doc.title }}<span v-if="doc.number" class="doc-nr">nr. {{ doc.number }}</span>
         </div>
         <p v-if="doc.description" class="doc-desc">{{ doc.description }}</p>
-        <div v-if="doc.files.length" class="files">
-          <a v-for="f in doc.files" :key="f.id" class="file" :href="'/api/files/' + f.id" target="_blank" rel="noopener" @click="opened">
-            {{ f.name }} <span class="muted small">{{ fmtSize(f.size) }}</span>
-          </a>
+        <div v-if="originals.length" class="files">
+          <FileLink v-for="f in originals" :key="f.id" :file="f" @open="opened" />
         </div>
+
         <div v-if="doc.signers.length" class="signbox" :class="{ done: !pending }">
-          <b>{{ pending ? 'În așteptarea semnării' : 'Semnat de toți' }}</b>
-          <span class="small">{{ doc.signers.length - pending }}/{{ doc.signers.length }}</span>
-          <span v-for="s in doc.signers" :key="s.id" class="signer" :class="{ ok: s.signed_at }">{{ s.signed_at ? '✓' : '○' }} {{ s.name }}</span>
-          <button v-if="doc.mySign === 'pending'" class="btn primary sm" @click="sign">Confirm că am semnat</button>
-          <button v-if="doc.canEdit && pending" class="btn link" @click="remind">Retrimite e-mail</button>
+          <div class="sign-head">
+            <b>{{ pending ? 'În curs de semnare' : 'Semnat de toți' }}</b>
+            <span class="small">{{ doc.signers.length - pending }} din {{ doc.signers.length }}</span>
+            <button v-if="doc.canEdit && pending" class="btn link" @click="remind">Retrimite e-mail</button>
+          </div>
+          <ol class="chain">
+            <li v-for="(s, i) in doc.signers" :key="s.id" :class="{ ok: s.signed_at, turn: s.id === doc.signTurn }">
+              <span class="step">{{ s.signed_at ? '✓' : i + 1 }}</span>
+              <div>
+                <b>{{ s.name }}</b>
+                <span class="small"> — {{ s.signed_at ? 'a semnat la ' + fmtDateTime(s.signed_at) : s.id === doc.signTurn ? 'este la rând' : 'așteaptă' }}</span>
+                <div v-if="signedFiles(s.id).length" class="files">
+                  <FileLink v-for="f in signedFiles(s.id)" :key="f.id" :file="f" @open="opened" />
+                </div>
+              </div>
+            </li>
+          </ol>
+          <div v-if="doc.mySign === 'pending'" class="myturn">
+            <div><b>Este rândul dvs. să semnați.</b> Descărcați versiunea curentă, semnați-o digital, apoi încărcați fișierul semnat.</div>
+            <div class="files">
+              <FileLink v-for="f in latest" :key="f.id" :file="f" @open="opened" />
+              <input ref="signed" type="file" multiple hidden @change="uploadSigned" />
+              <button class="btn primary sm" :disabled="busy" @click="$refs.signed.click()">{{ busy ? 'Se încarcă…' : 'Încarcă documentul semnat' }}</button>
+            </div>
+          </div>
         </div>
+
         <div class="doc-meta">
           <template v-for="id in doc.tagIds" :key="id">
             <span v-if="tags.get(id)" class="chip" :style="chipStyle(tags.get(id).color)">{{ tags.get(id).name }}</span>
@@ -464,9 +561,9 @@ const DocCard = {
         </div>
       </div>
       <div v-if="doc.canEdit || doc.unseen" class="doc-actions">
-        <button v-if="doc.unseen" class="btn link" @click="act('/api/documents/' + doc.id + '/seen')">Marchează ca văzut</button>
+        <button v-if="doc.unseen" class="btn link" @click="markSeen">Marchează ca văzut</button>
         <button v-if="doc.canEdit" class="btn link" @click="$emit('edit', doc)">Modifică</button>
-        <button v-if="doc.canEdit" class="btn link danger" @click="remove">Șterge</button>
+        <button v-if="doc.canDelete" class="btn link danger" @click="remove">Șterge</button>
       </div>
     </article>`,
 };
@@ -690,7 +787,7 @@ const UserForm = {
       <div class="row">
         <label class="field"><span>Nume de utilizator *</span><input v-model="form.username" maxlength="40" required autocomplete="off" placeholder="ex. ion.popescu" /></label>
         <label class="field"><span>{{ user ? 'Parolă nouă (opțional)' : 'Parolă inițială *' }}</span>
-          <input v-model="form.password" type="text" minlength="8" :required="!user" autocomplete="off" placeholder="cel puțin 8 caractere" />
+          <input v-model="form.password" type="text" minlength="10" :required="!user" autocomplete="off" placeholder="cel puțin 10 caractere" />
         </label>
       </div>
       <label class="field"><span>Rol</span>
@@ -957,6 +1054,43 @@ const CategoriesView = {
     </Modal>`,
 };
 
+// ---------- jurnal de audit ----------
+const AuditView = {
+  data: () => ({ rows: [], q: '' }),
+  computed: {
+    shown() {
+      const q = this.q.trim().toLowerCase();
+      return q ? this.rows.filter((r) => (r.username + ' ' + r.action + ' ' + r.details + ' ' + r.ip).toLowerCase().includes(q)) : this.rows;
+    },
+  },
+  methods: { fmtDateTime },
+  mounted() {
+    run(async () => (this.rows = await api('/api/admin/audit')));
+  },
+  template: /*html*/ `
+    <div class="page-head">
+      <div>
+        <h1>Jurnal de activitate</h1>
+        <p class="muted" style="margin:4px 0 0">Autentificări, descărcări, semnări și modificări — ultimele 2000 de înregistrări. Jurnalul nu poate fi editat din aplicație.</p>
+      </div>
+      <input v-model="q" type="search" placeholder="Filtrează după utilizator, acțiune, document…" style="max-width:340px" />
+    </div>
+    <div class="card" style="overflow:auto">
+      <table>
+        <thead><tr><th>Data</th><th>Utilizator</th><th>Acțiune</th><th>Detalii</th><th>Adresă IP</th></tr></thead>
+        <tbody>
+          <tr v-for="r in shown" :key="r.id">
+            <td style="white-space:nowrap">{{ fmtDateTime(r.at) }}</td>
+            <td><b>{{ r.username || '—' }}</b></td>
+            <td>{{ r.action }}</td>
+            <td>{{ r.details }}</td>
+            <td class="muted small">{{ r.ip }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>`,
+};
+
 // ---------- setări ----------
 const SettingsView = {
   data: () => ({ f: null, busy: false, testTo: '' }),
@@ -1014,14 +1148,14 @@ const SettingsView = {
 
 // ---------- aplicația ----------
 const App = {
-  components: { Login, ForcedPassword, Brand, Modal, PasswordFields, DocsView, InboxView, OrgView, UsersView, CategoriesView, BackupView, SettingsView },
+  components: { Login, ForcedPassword, Brand, Modal, PasswordFields, DocsView, InboxView, OrgView, UsersView, CategoriesView, BackupView, SettingsView, AuditView },
   data: () => ({ pass: null }),
   computed: {
     store: () => store,
     inbox: inboxCount,
     nav() {
       const items = [['documente', 'Documente', 'DocsView'], ['notificari', 'Notificări', 'InboxView'], ['organigrama', 'Organigramă', 'OrgView']];
-      if (isAdmin()) items.push(['utilizatori', 'Utilizatori', 'UsersView'], ['categorii', 'Categorii', 'CategoriesView'], ['backup', 'Backup', 'BackupView'], ['setari', 'Setări', 'SettingsView']);
+      if (isAdmin()) items.push(['utilizatori', 'Utilizatori', 'UsersView'], ['categorii', 'Categorii', 'CategoriesView'], ['backup', 'Backup', 'BackupView'], ['setari', 'Setări', 'SettingsView'], ['jurnal', 'Jurnal', 'AuditView']);
       return items;
     },
     view() {
@@ -1047,7 +1181,7 @@ const App = {
           <div class="topbar-in">
             <Brand />
             <nav class="nav">
-              <a v-for="n in nav" :key="n[0]" :href="'#' + n[0]" :class="{ on: view === n[2] }">{{ n[1] }}<span v-if="n[0] === 'notificari' && inbox" class="nav-count">{{ inbox }}</span></a>
+              <a v-for="n in nav" :key="n[0]" :href="'#' + n[0]" :class="{ on: view === n[2], sep: n[0] === 'utilizatori' }">{{ n[1] }}<span v-if="n[0] === 'notificari' && inbox" class="nav-count">{{ inbox }}</span></a>
             </nav>
             <div class="userbox">
               <span class="name">{{ store.me.full_name }}</span>

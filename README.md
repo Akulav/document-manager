@@ -11,7 +11,20 @@ npm install
 npm start
 ```
 
-Aplicația pornește pe `http://localhost:3080`. La prima pornire se creează contul `admin` cu parola `admin`; sistemul cere schimbarea parolei la prima autentificare.
+Aplicația pornește pe `http://localhost:3080`. La prima pornire se creează contul `admin` cu o parolă aleatorie, afișată în jurnalul serverului și salvată în `data/parola-initiala-admin.txt`. Sistemul cere schimbarea ei la prima autentificare, apoi șterge fișierul.
+
+## Securitate
+
+Făcut în aplicație: parole scrypt (minimum 10 caractere), sesiuni de 12 ore în cookie `HttpOnly` + `SameSite=Strict`, verificarea originii la cererile care modifică date, antete CSP / HSTS / anti-clickjacking, blocare temporară după încercări eșuate de autentificare, jurnal de audit (pagina **Jurnal**), verificarea accesului la fiecare fișier descărcat.
+
+De asigurat la instalare:
+
+- **HTTPS obligatoriu**, printr-un proxy (aplicația vorbește doar HTTP). Proxy-ul de pe aceeași mașină este recunoscut automat; pentru unul de pe altă mașină setați `TRUST_PROXY` la adresa lui.
+- **Disc criptat** pentru folderul `data/`: fișierele, baza de date și parola SMTP nu sunt criptate de aplicație.
+- **Antivirus** pe server: fișierele încărcate nu sunt scanate.
+- **Adresa aplicației** completată în Setări, ca linkurile din e-mailuri să nu depindă de adresa din cerere.
+- Fișierele de backup păstrate în siguranță: conțin toate documentele și hash-urile parolelor.
+- Nu există autentificare în doi pași; conturile de administrator trebuie să aibă parole lungi și unice.
 
 Variabile de mediu opționale:
 
@@ -37,7 +50,7 @@ Copia de rezervă se face din pagina **Backup** (admin): un singur fișier `.ans
 - **Categorii și etichete**: definite de administrator (ex. „Resurse umane” → „Concedii”).
 - **Vizibilitate**: fiecare document este vizibil tuturor angajaților sau doar subdiviziunilor și persoanelor selectate. O subdiviziune selectată include și subdiviziunile din subordinea ei. Autorul și administratorii văd documentul întotdeauna.
 - **Notificări**: fiecare utilizator are o pagină cu documentele pe care încă nu le-a văzut și cu cele care îi așteaptă semnătura.
-- **Semnare**: un document poate fi marcat „în așteptarea semnării”, cu lista semnatarilor. Aceștia primesc un e-mail și confirmă semnarea în aplicație (este o confirmare, nu o semnătură electronică).
+- **Semnare în lanț**: autorul încarcă documentul și stabilește ordinea semnatarilor. Primul îl descarcă, îl semnează digital (în afara aplicației) și încarcă versiunea semnată în aceeași înregistrare; apoi următorul descarcă acea versiune, și tot așa. Persoana aflată la rând primește un e-mail. Aplicația nu validează criptografic semnătura; refuză doar un fișier identic cu unul deja existent.
 - **Organigramă**: structură ierarhică de subdiviziuni, cu angajații fiecăreia; administratorul o editează direct din pagină.
 - **Roluri**: Administrator (gestionează tot), Editor (adaugă documente și le modifică pe cele proprii), Angajat (doar vizualizare).
 

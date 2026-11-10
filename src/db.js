@@ -99,7 +99,28 @@ CREATE TABLE IF NOT EXISTS document_signers (
   signed_at TEXT,
   PRIMARY KEY (document_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY,
+  at TEXT NOT NULL DEFAULT (datetime('now')),
+  username TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,
+  details TEXT NOT NULL DEFAULT ''
+);
 `);
+
+// Coloane adăugate după prima versiune; verificarea face pasul repetabil pe baze de date existente.
+function addColumn(table, column, definition) {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+addColumn('document_signers', 'position', 'INTEGER NOT NULL DEFAULT 0'); // ordinea în lanțul de semnare
+addColumn('document_files', 'signed_by', 'INTEGER'); // cine a încărcat această versiune semnată
+addColumn('document_files', 'signed_by_name', 'TEXT'); // numele rămâne chiar dacă utilizatorul este șters
+addColumn('document_files', 'created_at', 'TEXT');
+
+const INITIAL_PASSWORD_FILE = path.join(DATA_DIR, 'parola-initiala-admin.txt');
 
 function tx(fn) {
   db.exec('BEGIN');
@@ -129,10 +150,19 @@ function checkPassword(password, stored) {
 
 // Prima pornire: cont de administrator și câteva categorii de exemplu (pot fi schimbate din interfață).
 if (!db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
+  // Parola inițială este aleatorie (nu „admin”), ca nimeni din rețea să nu poată prelua sistemul
+  // înainte de prima autentificare. Se găsește în folderul de date și în jurnalul serverului.
+  const initial = crypto.randomBytes(12).toString('base64url');
+  fs.writeFileSync(
+    INITIAL_PASSWORD_FILE,
+    `Utilizator: admin\nParola: ${initial}\n\nLa prima autentificare sistemul cere o parolă nouă, iar acest fișier este șters automat.\n`,
+    { mode: 0o600 }
+  );
+  console.log(`\nCont inițial creat — utilizator: admin, parola: ${initial}\n(salvată și în ${INITIAL_PASSWORD_FILE})\n`);
   tx(() => {
     db.prepare(
       "INSERT INTO users (username, full_name, position, role, pass_hash, must_change) VALUES ('admin', 'Administrator', 'Administrator de sistem', 'admin', ?, 1)"
-    ).run(hashPassword('admin'));
+    ).run(hashPassword(initial));
     db.prepare("INSERT INTO units (name, type) VALUES ('Agenția Națională pentru Soluționarea Contestațiilor', 'Instituție')").run();
     const cat = db.prepare('INSERT INTO categories (name, color, sort) VALUES (?, ?, ?)');
     const tag = db.prepare('INSERT INTO tags (category_id, name) VALUES (?, ?)');
@@ -149,4 +179,4 @@ if (!db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
 }
 db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
 
-module.exports = { db, tx, hashPassword, checkPassword, UPLOAD_DIR, DATA_DIR };
+module.exports = { db, tx, hashPassword, checkPassword, UPLOAD_DIR, DATA_DIR, INITIAL_PASSWORD_FILE };

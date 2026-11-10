@@ -4,17 +4,19 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
 const Fastify = require('fastify');
-const { db, tx, hashPassword, checkPassword, UPLOAD_DIR } = require('./db');
+const { db, tx, hashPassword, checkPassword, UPLOAD_DIR, INITIAL_PASSWORD_FILE } = require('./db');
 const mail = require('./mail');
 const backup = require('./backup');
 
 const PORT = Number(process.env.PORT) || 3080;
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_FILE = 50 * 1024 * 1024;
-const SESSION_MS = 7 * 24 * 3600 * 1000;
+const SESSION_MS = 12 * 3600 * 1000; // o zi de lucru; după aceea se cere din nou autentificarea
 const ROLES = ['admin', 'editor', 'user'];
 
-const app = Fastify({ logger: { level: 'warn' }, trustProxy: !!process.env.TRUST_PROXY });
+// Antetele X-Forwarded-* sunt crezute doar dacă vin de la un proxy de pe aceeași mașină (cazul obișnuit).
+// Astfel adresa IP reală ajunge în jurnal și în limitarea autentificărilor, fără a putea fi falsificată din rețea.
+const app = Fastify({ logger: { level: 'warn' }, trustProxy: process.env.TRUST_PROXY || 'loopback' });
 
 // ---------- utilitare ----------
 const fail = (code, message) => Object.assign(new Error(message), { statusCode: code, expose: true });
@@ -53,15 +55,44 @@ function accessClause(user) {
   };
 }
 const canEdit = (user, doc) => user.role === 'admin' || (user.role === 'editor' && doc.created_by === user.id);
+// Un document pe care cineva l-a semnat deja poate fi șters doar de un administrator.
+const canDelete = (user, doc, signers) => user.role === 'admin' || (canEdit(user, doc) && !signers.some((s) => s.signed_at));
 
 function removeStored(names) {
   for (const n of names) fs.rm(path.join(UPLOAD_DIR, n), { force: true }, () => {});
 }
 
 // ---------- autentificare ----------
-const loginFails = new Map(); // cheie -> { count, until }
-function loginKey(req, username) {
-  return req.ip + '|' + username;
+// Încercările eșuate se numără pe (IP + utilizator) și pe IP; după prag urmează o pauză de 10 minute.
+const loginFails = new Map(); // cheie -> { count, until, last }
+const isBlocked = (key) => (loginFails.get(key)?.until || 0) > Date.now();
+function recordFail(key, max) {
+  const f = loginFails.get(key) || { count: 0, until: 0 };
+  f.count++;
+  f.last = Date.now();
+  if (f.count >= max) {
+    f.count = 0;
+    f.until = Date.now() + 10 * 60000;
+  }
+  loginFails.set(key, f);
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, f] of loginFails) if (f.until < now && f.last < now - 30 * 60000) loginFails.delete(k);
+}, 5 * 60000).unref();
+// Verificată când utilizatorul nu există, ca timpul de răspuns să nu trădeze ce conturi sunt reale.
+const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
+
+const isHttps = (req) => req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https';
+
+// Jurnal de audit: cine, ce și când. Nu se șterge la import și nu poate fi modificat din interfață.
+const auditInsert = db.prepare('INSERT INTO audit_log (username, ip, action, details) VALUES (?, ?, ?, ?)');
+function audit(req, action, details = '', username) {
+  try {
+    auditInsert.run(username || req.user?.username || '', req.ip || '', action, String(details).slice(0, 500));
+  } catch (e) {
+    req.log.error(e);
+  }
 }
 
 async function requireUser(req) {
@@ -123,7 +154,10 @@ function readUser(body) {
 
 function readPassword(v) {
   const p = String(v ?? '');
-  if (p.length < 8 || p.length > 200) throw fail(400, 'Parola trebuie să aibă cel puțin 8 caractere.');
+  if (p.length < 10 || p.length > 200) throw fail(400, 'Parola trebuie să aibă cel puțin 10 caractere.');
+  if (/^(.)\1*$/.test(p) || ['1234567890', 'parola1234', 'password123', 'qwertyuiop'].includes(p.toLowerCase())) {
+    throw fail(400, 'Parola este prea ușor de ghicit.');
+  }
   return p;
 }
 
@@ -154,8 +188,25 @@ function readDoc(data) {
   };
 }
 
-// Citește formularul multipart: câmpul „data” (JSON) și fișierele, scrise direct pe disc.
 async function readDocForm(req) {
+  const { data, saved } = await readUploads(req);
+  try {
+    return { doc: readDoc(data), saved };
+  } catch (e) {
+    removeStored(saved.map((f) => f.stored));
+    throw e;
+  }
+}
+
+function fileHash(stored) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    fs.createReadStream(path.join(UPLOAD_DIR, stored)).on('data', (c) => h.update(c)).on('error', reject).on('end', () => resolve(h.digest('hex')));
+  });
+}
+
+// Citește formularul multipart: câmpul „data” (JSON) și fișierele, scrise direct pe disc.
+async function readUploads(req) {
   let data = null;
   const saved = [];
   try {
@@ -178,11 +229,17 @@ async function readDocForm(req) {
         }
       }
     }
-    return { doc: readDoc(data), saved };
+    return { data, saved };
   } catch (e) {
     removeStored(saved.map((f) => f.stored));
     throw e;
   }
+}
+
+// Semnarea este în lanț: următorul la rând este primul semnatar (după poziție) care încă nu a semnat.
+function currentSigner(docId) {
+  const r = db.prepare('SELECT user_id FROM document_signers WHERE document_id = ? AND signed_at IS NULL ORDER BY position, user_id LIMIT 1').get(docId);
+  return r ? r.user_id : null;
 }
 
 function saveDocLinks(id, doc, saved) {
@@ -192,22 +249,25 @@ function saveDocLinks(id, doc, saved) {
   const t = db.prepare('INSERT INTO document_tags (document_id, tag_id) VALUES (?, ?)');
   const u = db.prepare('INSERT INTO document_units (document_id, unit_id) VALUES (?, ?)');
   const p = db.prepare('INSERT INTO document_users (document_id, user_id) VALUES (?, ?)');
-  const f = db.prepare('INSERT INTO document_files (document_id, name, stored, size) VALUES (?, ?, ?, ?)');
+  const f = db.prepare("INSERT INTO document_files (document_id, name, stored, size, created_at) VALUES (?, ?, ?, ?, datetime('now'))");
   doc.tagIds.forEach((x) => t.run(id, x));
   doc.unitIds.forEach((x) => u.run(id, x));
   doc.userIds.forEach((x) => p.run(id, x));
   saved.forEach((x) => f.run(id, x.name, x.stored, x.size));
-  // Semnatarii rămași își păstrează starea; întoarcem doar pe cei nou adăugați, pentru notificare.
-  const current = db.prepare('SELECT user_id FROM document_signers WHERE document_id = ?').all(id).map((r) => r.user_id);
+  // Ordinea din formular este ordinea semnării. Cine a semnat deja își păstrează semnătura
+  // și nu poate fi scos din lanț (altfel fișierul semnat ar rămâne fără autor).
+  const current = db.prepare('SELECT user_id, signed_at FROM document_signers WHERE document_id = ?').all(id);
   const delSigner = db.prepare('DELETE FROM document_signers WHERE document_id = ? AND user_id = ?');
-  const addSigner = db.prepare('INSERT INTO document_signers (document_id, user_id) VALUES (?, ?)');
-  current.filter((x) => !doc.signerIds.includes(x)).forEach((x) => delSigner.run(id, x));
-  const added = doc.signerIds.filter((x) => !current.includes(x));
-  added.forEach((x) => addSigner.run(id, x));
-  return added;
+  const addSigner = db.prepare('INSERT INTO document_signers (document_id, user_id, position) VALUES (?, ?, ?)');
+  const moveSigner = db.prepare('UPDATE document_signers SET position = ? WHERE document_id = ? AND user_id = ?');
+  const signed = current.filter((s) => s.signed_at).map((s) => s.user_id);
+  const order = [...signed.filter((x) => !doc.signerIds.includes(x)), ...doc.signerIds];
+  current.filter((s) => !order.includes(s.user_id)).forEach((s) => delSigner.run(id, s.user_id));
+  order.forEach((x, i) => (current.some((s) => s.user_id === x) ? moveSigner.run(i, id, x) : addSigner.run(id, x, i)));
 }
 
 async function notifySigners(req, docId, userIds) {
+  userIds = userIds.filter(Boolean);
   if (!userIds.length) return null;
   const doc = db.prepare('SELECT id, title, number, doc_date FROM documents WHERE id = ?').get(docId);
   const q = db.prepare('SELECT full_name, email FROM users WHERE id = ? AND active = 1');
@@ -227,19 +287,23 @@ function listDocuments(user, onlyId) {
     )
     .all(user.id, ...acc.params, ...(onlyId ? [onlyId] : []));
   const signers = db.prepare(
-    'SELECT s.user_id AS id, u.full_name AS name, s.signed_at FROM document_signers s JOIN users u ON u.id = s.user_id WHERE s.document_id = ? ORDER BY u.full_name'
+    'SELECT s.user_id AS id, u.full_name AS name, s.signed_at FROM document_signers s JOIN users u ON u.id = s.user_id WHERE s.document_id = ? ORDER BY s.position, s.user_id'
   );
   const tags = db.prepare('SELECT tag_id FROM document_tags WHERE document_id = ?');
   const units = db.prepare('SELECT unit_id FROM document_units WHERE document_id = ?');
   const users = db.prepare('SELECT user_id FROM document_users WHERE document_id = ?');
-  const files = db.prepare('SELECT id, name, size FROM document_files WHERE document_id = ? ORDER BY id');
+  const files = db.prepare('SELECT id, name, size, signed_by, signed_by_name, created_at FROM document_files WHERE document_id = ? ORDER BY id');
   return rows.map(({ seen, ...d }) => {
     const sig = signers.all(d.id);
     const mine = sig.find((s) => s.id === user.id);
+    const turn = sig.find((s) => !s.signed_at);
     return {
     ...d,
     signers: sig,
-    mySign: mine ? (mine.signed_at ? 'signed' : 'pending') : null,
+    signTurn: turn ? turn.id : null,
+    // 'pending' = este rândul meu; 'waiting' = aștept să semneze cei dinaintea mea
+    mySign: mine ? (mine.signed_at ? 'signed' : turn.id === user.id ? 'pending' : 'waiting') : null,
+    canDelete: canDelete(user, d, sig),
     // „nevăzut” = document al altcuiva, apărut după crearea contului și încă nedeschis
     unseen: !seen && d.created_by !== user.id && d.created_at >= user.created_at,
     tagIds: tags.all(d.id).map((r) => r.tag_id),
@@ -264,11 +328,30 @@ app.register(require('@fastify/cookie'));
 app.register(require('@fastify/multipart'), { limits: { fileSize: MAX_FILE, files: 10, fields: 5, fieldSize: 200000 } });
 app.register(require('@fastify/static'), { root: path.join(__dirname, '..', 'public') });
 
+// Apărare suplimentară împotriva CSRF (pe lângă cookie-ul SameSite=Strict): cererile care modifică
+// date trebuie să vină de pe aceeași origine. Un alt site, chiar de pe un subdomeniu vecin, este refuzat.
+app.addHook('onRequest', async (req) => {
+  if (req.method === 'GET' || req.method === 'HEAD') return;
+  const origin = req.headers.origin;
+  if (!origin) return; // clienții care nu sunt browsere nu trimit Origin și nici cookie-uri furate
+  let host = '';
+  try {
+    host = new URL(origin).host;
+  } catch {}
+  if (host !== req.headers.host && host !== req.host) throw fail(403, 'Cerere refuzată: origine necunoscută.');
+});
+
+// Vue compilează șabloanele în browser, de aceea este nevoie de 'unsafe-eval'; restul este blocat.
+const CSP = "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 app.addHook('onSend', async (req, reply) => {
   reply.header('X-Content-Type-Options', 'nosniff');
-  reply.header('X-Frame-Options', 'SAMEORIGIN');
+  reply.header('X-Frame-Options', 'DENY');
   reply.header('Referrer-Policy', 'same-origin');
+  reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (isHttps(req)) reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   if (req.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
+  // fișierele descărcate nu primesc CSP-ul aplicației: vizualizatorul PDF al browserului are nevoie de propriile resurse
+  if (!req.url.startsWith('/api/files/')) reply.header('Content-Security-Policy', CSP);
 });
 
 app.setErrorHandler((err, req, reply) => {
@@ -288,24 +371,28 @@ app.register(async (app) => {
   // --- sesiune ---
   app.post('/api/login', async (req, reply) => {
     const username = str(req.body?.username, 40).toLowerCase();
-    const password = String(req.body?.password ?? '');
-    const key = loginKey(req, username);
-    const f = loginFails.get(key);
-    if (f && f.until > Date.now()) throw fail(429, 'Prea multe încercări. Reîncercați peste câteva minute.');
+    const password = String(req.body?.password ?? '').slice(0, 200);
+    const userKey = req.ip + '|' + username;
+    const ipKey = 'ip|' + req.ip;
+    if (isBlocked(userKey) || isBlocked(ipKey)) throw fail(429, 'Prea multe încercări. Reîncercați peste câteva minute.');
     const user = db.prepare('SELECT id, pass_hash, active FROM users WHERE username = ?').get(username);
-    if (!user || !user.active || !checkPassword(password, user.pass_hash)) {
-      const count = (f && f.count ? f.count : 0) + 1;
-      loginFails.set(key, { count: count >= 8 ? 0 : count, until: count >= 8 ? Date.now() + 10 * 60000 : 0 });
+    const ok = checkPassword(password, user ? user.pass_hash : DUMMY_HASH);
+    if (!user || !user.active || !ok) {
+      recordFail(userKey, 8);
+      recordFail(ipKey, 60);
+      audit(req, 'autentificare eșuată', '', username);
       throw fail(401, 'Utilizator sau parolă incorectă.');
     }
-    loginFails.delete(key);
+    loginFails.delete(userKey);
+    audit(req, 'autentificare', '', username);
+    db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
     const token = crypto.randomBytes(32).toString('hex');
     db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(sha(token), user.id, Date.now() + SESSION_MS);
     reply.setCookie('sid', token, {
       path: '/',
       httpOnly: true,
       sameSite: 'strict',
-      secure: req.protocol === 'https',
+      secure: isHttps(req),
       maxAge: SESSION_MS / 1000,
     });
     return { ok: true };
@@ -326,6 +413,9 @@ app.register(async (app) => {
     if (next === String(req.body.current)) throw fail(400, 'Parola nouă trebuie să difere de cea curentă.');
     db.prepare('UPDATE users SET pass_hash = ?, must_change = 0 WHERE id = ?').run(hashPassword(next), req.user.id);
     db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(req.user.id, sha(req.cookies.sid));
+    // parola inițială generată la instalare nu mai este valabilă, deci fișierul cu ea dispare
+    if (req.user.username === 'admin') fs.rm(INITIAL_PASSWORD_FILE, { force: true }, () => {});
+    audit(req, 'parolă schimbată');
     return { ok: true };
   });
 
@@ -367,6 +457,7 @@ app.register(async (app) => {
     const r = db
       .prepare('INSERT INTO users (username, full_name, position, email, unit_id, role, active, pass_hash, must_change) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)')
       .run(u.username, u.full_name, u.position, u.email, u.unit_id, u.role, u.active, hashPassword(password));
+    audit(req, 'utilizator creat', `${u.username} (${u.role})`);
     return { id: lastId(r) };
   });
   app.put('/api/users/:id', { preHandler: requireAdmin }, async (req) => {
@@ -388,15 +479,17 @@ app.register(async (app) => {
       // parolă resetată sau cont dezactivat: sesiunile vechi nu mai sunt valabile
       if ((req.body.password && id !== req.user.id) || !u.active) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
     });
+    audit(req, 'utilizator modificat', `${u.username} (${u.role}${u.active ? '' : ', dezactivat'}${req.body.password ? ', parolă resetată' : ''})`);
     return { ok: true };
   });
   app.delete('/api/users/:id', { preHandler: requireAdmin }, async (req) => {
     const id = Number(req.params.id);
     if (id === req.user.id) throw fail(400, 'Nu vă puteți șterge propriul cont.');
-    const old = db.prepare('SELECT role, active FROM users WHERE id = ?').get(id);
+    const old = db.prepare('SELECT username, role, active FROM users WHERE id = ?').get(id);
     if (!old) throw fail(404, 'Utilizatorul nu a fost găsit.');
     if (old.role === 'admin' && old.active && !activeAdminsExcept(id)) throw fail(400, 'Trebuie să rămână cel puțin un administrator activ.');
     db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    audit(req, 'utilizator șters', old.username);
     return { ok: true };
   });
 
@@ -456,13 +549,15 @@ app.register(async (app) => {
   app.post('/api/documents', { preHandler: requireEditor }, async (req) => {
     const { doc, saved } = await readDocForm(req);
     try {
-      const { id, added } = tx(() => {
+      const id = tx(() => {
         const r = db
           .prepare('INSERT INTO documents (title, number, doc_date, description, visibility, created_by) VALUES (?, ?, ?, ?, ?, ?)')
           .run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, req.user.id);
-        return { id: lastId(r), added: saveDocLinks(lastId(r), doc, saved) };
+        saveDocLinks(lastId(r), doc, saved);
+        return lastId(r);
       });
-      return { id, mail: await notifySigners(req, id, added) };
+      audit(req, 'document adăugat', `#${id} ${doc.title}`);
+      return { id, mail: await notifySigners(req, id, [currentSigner(id)]) };
     } catch (e) {
       removeStored(saved.map((f) => f.stored));
       throw e;
@@ -480,13 +575,14 @@ app.register(async (app) => {
     }
     const { doc, saved } = await readDocForm(req);
     let removed = [];
-    let added = [];
+    const turnBefore = currentSigner(id);
     try {
       tx(() => {
         db.prepare("UPDATE documents SET title = ?, number = ?, doc_date = ?, description = ?, visibility = ?, updated_at = datetime('now') WHERE id = ?").run(
           doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, id
         );
-        const q = db.prepare('SELECT stored FROM document_files WHERE id = ? AND document_id = ?');
+        // versiunile semnate fac parte din lanțul de semnare și nu pot fi eliminate la editare
+        const q = db.prepare('SELECT stored FROM document_files WHERE id = ? AND document_id = ? AND signed_by_name IS NULL');
         const del = db.prepare('DELETE FROM document_files WHERE id = ? AND document_id = ?');
         for (const fid of doc.removeFileIds) {
           const f = q.get(fid, id);
@@ -495,14 +591,17 @@ app.register(async (app) => {
             del.run(fid, id);
           }
         }
-        added = saveDocLinks(id, doc, saved);
+        saveDocLinks(id, doc, saved);
       });
     } catch (e) {
       removeStored(saved.map((f) => f.stored));
       throw e;
     }
     removeStored(removed);
-    return { ok: true, mail: await notifySigners(req, id, added) };
+    audit(req, 'document modificat', `#${id} ${doc.title}`);
+    // e-mail doar dacă s-a schimbat persoana care este acum la rând
+    const turn = currentSigner(id);
+    return { ok: true, mail: turn !== turnBefore ? await notifySigners(req, id, [turn]) : null };
   });
 
   // --- notificări: documente nevăzute și semnături ---
@@ -517,22 +616,43 @@ app.register(async (app) => {
     markSeen(req.user.id, doc.id);
     return { ok: true };
   });
+  // Semnatarul aflat la rând încarcă versiunea semnată digital; ea devine versiunea pe care o semnează următorul.
   app.post('/api/documents/:id/sign', { preHandler: requireUser }, async (req) => {
     const id = Number(req.params.id);
-    const r = db
-      .prepare("UPDATE document_signers SET signed_at = datetime('now') WHERE document_id = ? AND user_id = ? AND signed_at IS NULL")
-      .run(id, req.user.id);
-    if (!r.changes) throw fail(404, 'Nu aveți o semnătură în așteptare pentru acest document.');
-    markSeen(req.user.id, id);
-    return { ok: true };
+    const { saved } = await readUploads(req);
+    const stored = saved.map((f) => f.stored);
+    try {
+      const doc = db.prepare('SELECT id, title FROM documents WHERE id = ?').get(id);
+      if (!doc || currentSigner(id) !== req.user.id) throw fail(403, 'Nu este rândul dvs. să semnați acest document.');
+      if (!saved.length) throw fail(400, 'Încărcați documentul semnat.');
+      // Nu putem valida criptografic semnătura, dar putem refuza un fișier identic cu unul deja existent
+      // (adică documentul descărcat și încărcat înapoi fără a fi semnat).
+      const known = new Set();
+      for (const f of db.prepare('SELECT stored FROM document_files WHERE document_id = ?').all(id)) known.add(await fileHash(f.stored).catch(() => ''));
+      for (const f of saved) {
+        if (known.has(await fileHash(f.stored))) throw fail(400, `„${f.name}” este identic cu un fișier deja existent. Încărcați versiunea semnată de dvs.`);
+      }
+      tx(() => {
+        const ins = db.prepare("INSERT INTO document_files (document_id, name, stored, size, signed_by, signed_by_name, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))");
+        saved.forEach((f) => ins.run(id, f.name, f.stored, f.size, req.user.id, req.user.full_name));
+        const r = db.prepare("UPDATE document_signers SET signed_at = datetime('now') WHERE document_id = ? AND user_id = ? AND signed_at IS NULL").run(id, req.user.id);
+        if (!r.changes) throw fail(403, 'Nu este rândul dvs. să semnați acest document.');
+        markSeen(req.user.id, id);
+      });
+      audit(req, 'document semnat', `#${id} ${doc.title}: ${saved.map((f) => f.name).join(', ')}`);
+    } catch (e) {
+      removeStored(stored);
+      throw e;
+    }
+    return { ok: true, mail: await notifySigners(req, id, [currentSigner(id)]) };
   });
   app.post('/api/documents/:id/remind', { preHandler: requireEditor }, async (req) => {
     const id = Number(req.params.id);
     const old = db.prepare('SELECT id, created_by FROM documents WHERE id = ?').get(id);
     if (!old || !canEdit(req.user, old)) throw fail(404, 'Documentul nu a fost găsit.');
-    const pending = db.prepare('SELECT user_id FROM document_signers WHERE document_id = ? AND signed_at IS NULL').all(id).map((r) => r.user_id);
-    if (!pending.length) throw fail(400, 'Toți semnatarii au semnat deja.');
-    return { mail: await notifySigners(req, id, pending) };
+    const turn = currentSigner(id);
+    if (!turn) throw fail(400, 'Toți semnatarii au semnat deja.');
+    return { mail: await notifySigners(req, id, [turn]) };
   });
 
   // --- setări (admin): păstrate în baza de date, deci rămân la actualizarea aplicației ---
@@ -559,6 +679,7 @@ app.register(async (app) => {
     if (b.clear_password) values.smtp_pass = '';
     else if (b.smtp_pass) values.smtp_pass = String(b.smtp_pass).slice(0, 500);
     tx(() => mail.saveSettings(values));
+    audit(req, 'setări modificate', `SMTP ${values.smtp_host || 'dezactivat'}`);
     return publicSettings();
   });
   app.post('/api/admin/settings/test', { preHandler: requireAdmin }, async (req) => {
@@ -573,9 +694,14 @@ app.register(async (app) => {
     return { ok: true };
   });
 
+  app.get('/api/admin/audit', { preHandler: requireAdmin }, async () =>
+    db.prepare('SELECT id, at, username, ip, action, details FROM audit_log ORDER BY id DESC LIMIT 2000').all()
+  );
+
   // --- copie de rezervă completă (admin) ---
   app.get('/api/admin/export', { preHandler: requireAdmin }, async (req, reply) => {
     const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
+    audit(req, 'export complet');
     reply.type('application/octet-stream').header('Content-Disposition', `attachment; filename="ansc-backup-${stamp}.anscbackup"`);
     return reply.send(backup.createExportStream());
   });
@@ -584,17 +710,23 @@ app.register(async (app) => {
   app.post('/api/admin/import', { preHandler: requireAdmin, bodyLimit: 1024 ** 4 }, async (req) => {
     if (!req.body || typeof req.body.pipe !== 'function') throw fail(400, 'Încărcați fișierul de backup.');
     try {
-      return await backup.importArchive(req.body);
+      const r = await backup.importArchive(req.body);
+      audit(req, 'import complet', `${r.documents} documente, ${r.users} utilizatori, backup din ${r.created_at}`);
+      return r;
     } catch (e) {
       req.log.warn(e);
+      audit(req, 'import eșuat', e.message);
       throw fail(400, e.expose ? e.message : 'Arhiva este deteriorată sau nu este un backup e-Management ANSC. Nimic nu a fost modificat.');
     }
   });
 
   app.delete('/api/documents/:id', { preHandler: requireEditor }, async (req) => {
     const id = Number(req.params.id);
-    const old = db.prepare('SELECT id, created_by FROM documents WHERE id = ?').get(id);
+    const old = db.prepare('SELECT id, title, created_by FROM documents WHERE id = ?').get(id);
     if (!old || !canEdit(req.user, old)) throw fail(404, 'Documentul nu a fost găsit sau nu îl puteți șterge.');
+    const signers = db.prepare('SELECT signed_at FROM document_signers WHERE document_id = ?').all(id);
+    if (!canDelete(req.user, old, signers)) throw fail(403, 'Documentul are deja semnături; doar un administrator îl poate șterge.');
+    audit(req, 'document șters', `#${id} ${old.title}`);
     const stored = db.prepare('SELECT stored FROM document_files WHERE document_id = ?').all(id).map((f) => f.stored);
     db.prepare('DELETE FROM documents WHERE id = ?').run(id);
     removeStored(stored);
@@ -609,6 +741,7 @@ app.register(async (app) => {
     const file = f && path.join(UPLOAD_DIR, f.stored);
     if (!f || !fs.existsSync(file)) throw fail(404, 'Fișierul nu a fost găsit.');
     markSeen(req.user.id, f.document_id); // deschiderea unui fișier înseamnă că documentul a fost văzut
+    audit(req, 'fișier descărcat', `#${f.document_id} ${f.name}`);
     // doar PDF și imaginile se deschid în browser; restul se descarcă
     const inline = INLINE_TYPES[path.extname(f.name).toLowerCase()];
     reply
