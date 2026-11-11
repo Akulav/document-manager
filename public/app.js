@@ -880,22 +880,28 @@ const BackupView = {
       this.busy = false;
     },
   },
+  // Afișat în pagina „Setări”, în coloana din dreapta.
   template: /*html*/ `
-    <div class="page-head"><h1>Copie de rezervă</h1></div>
-    <div class="cats">
-      <div class="card cat" style="border-top-color:var(--accent)">
-        <h2>Export complet</h2>
-        <p class="muted">Un singur fișier comprimat cu absolut tot: utilizatori (cu parolele criptate), organigramă, categorii, documente, semnături și toate fișierele atașate. Fiecare element are sumă de control.</p>
-        <a class="btn primary" href="/api/admin/export" download>Descarcă exportul</a>
-        <p class="muted small mb0">Păstrați fișierul într-un loc sigur: conține toate documentele, indiferent de vizibilitate.</p>
-      </div>
-      <div class="card cat" style="border-top-color:var(--danger)">
-        <h2>Import (restaurare)</h2>
-        <p class="muted">Înlocuiește toate datele actuale cu cele dintr-un export. Arhiva este verificată integral înainte de a modifica ceva; dacă este deteriorată sau incompletă, nu se schimbă nimic.</p>
-        <input type="file" accept=".anscbackup" :disabled="busy" @change="file = $event.target.files[0] || null" />
-        <p v-if="file" class="muted small">{{ file.name }} — {{ fmtSize(file.size) }}</p>
-        <button class="btn danger mt10" :disabled="!file || busy" @click="restore">{{ busy ? 'Se importă… nu închideți pagina' : 'Importă și înlocuiește tot' }}</button>
-      </div>
+    <div class="settings-col">
+      <section class="card panel">
+        <div class="panel-head"><h2>Export complet</h2><span class="pill">Backup</span></div>
+        <p class="muted small">Un singur fișier comprimat cu tot: utilizatori (parole criptate), organigramă, categorii, documente, semnături și fișiere. Fiecare element are sumă de control.</p>
+        <div class="panel-foot">
+          <a class="btn primary" href="/api/admin/export" download>Descarcă exportul</a>
+          <span class="muted small">Păstrați-l într-un loc sigur: conține toate documentele.</span>
+        </div>
+      </section>
+      <section class="card panel danger-panel">
+        <div class="panel-head"><h2>Import (restaurare)</h2><span class="pill red">Înlocuiește tot</span></div>
+        <p class="muted small">Înlocuiește toate datele actuale cu cele dintr-un export. Arhiva este verificată integral înainte; dacă este deteriorată sau incompletă, nu se schimbă nimic.</p>
+        <label class="filepick" :class="{ chosen: file }">
+          <input type="file" accept=".anscbackup" :disabled="busy" @change="file = $event.target.files[0] || null" />
+          <span>{{ file ? file.name + ' — ' + fmtSize(file.size) : 'Alegeți fișierul .anscbackup…' }}</span>
+        </label>
+        <div class="panel-foot">
+          <button class="btn danger-solid" :disabled="!file || busy" @click="restore">{{ busy ? 'Se importă… nu închideți pagina' : 'Importă și înlocuiește tot' }}</button>
+        </div>
+      </section>
     </div>`,
 };
 
@@ -1559,25 +1565,67 @@ const CategoriesView = {
 };
 
 // ---------- jurnal de audit ----------
+const yesterday = () => {
+  const d = new Date(Date.now() - 86400000);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+};
 const AuditView = {
-  data: () => ({ rows: [], q: '' }),
+  data: () => ({ rows: [], total: 0, oldest: null, retention: 90, q: '', until: yesterday(), busy: false, loaded: false }),
   computed: {
     shown() {
       const q = this.q.trim().toLowerCase();
       return q ? this.rows.filter((r) => (r.username + ' ' + r.action + ' ' + r.details + ' ' + r.ip).toLowerCase().includes(q)) : this.rows;
     },
+    maxDate: yesterday,
   },
-  methods: { fmtDateTime },
+  methods: {
+    fmtDateTime,
+    async load() {
+      await run(async () => {
+        const r = await api('/api/admin/audit');
+        Object.assign(this, { rows: r.rows, total: r.total, oldest: r.oldest, retention: r.retentionDays });
+      });
+      this.loaded = true;
+    },
+    async prune() {
+      if (!this.until) return;
+      const shown = this.until.split('-').reverse().join('.');
+      const ok = await ask({
+        title: 'Curățați jurnalul?',
+        message: 'Toate înregistrările până la ' + shown + ' inclusiv vor fi șterse definitiv. Ștergerea va rămâne consemnată în jurnal.',
+        okLabel: 'Șterge înregistrările',
+        danger: true,
+      });
+      if (!ok) return;
+      this.busy = true;
+      let r;
+      if (await run(async () => (r = await api('/api/admin/audit/prune', { method: 'POST', body: { until: this.until } })))) {
+        toast(r.deleted ? r.deleted + ' înregistrări au fost șterse.' : 'Nu existau înregistrări până la această dată.');
+        await this.load();
+      }
+      this.busy = false;
+    },
+  },
   mounted() {
-    run(async () => (this.rows = await api('/api/admin/audit')));
+    this.load();
   },
   template: /*html*/ `
     <div class="page-head">
       <div>
         <h1>Jurnal de activitate</h1>
-        <p class="muted page-sub">Autentificări, descărcări, semnări și modificări — ultimele 2000 de înregistrări. Jurnalul nu poate fi editat din aplicație.</p>
+        <p class="muted page-sub">
+          Autentificări, descărcări, semnări și modificări. {{ total }} înregistrări<template v-if="oldest">, începând cu {{ fmtDateTime(oldest) }}</template><template v-if="total > rows.length"> (sunt afișate ultimele {{ rows.length }})</template>.
+          Înregistrările mai vechi de {{ retention }} de zile se șterg automat.
+        </p>
       </div>
-      <input v-model="q" type="search" placeholder="Filtrează după utilizator, acțiune, document…" class="search-sm" />
+      <div class="head-actions">
+        <input v-model="q" type="search" placeholder="Filtrează după utilizator, acțiune, document…" class="search-sm" aria-label="Filtrează jurnalul" />
+        <form class="prune" @submit.prevent="prune">
+          <label class="prune-label" for="prune-until">Șterge până la</label>
+          <input id="prune-until" v-model="until" type="date" :max="maxDate" required />
+          <button class="btn danger" :disabled="busy || !until">{{ busy ? 'Se șterge…' : 'Curăță' }}</button>
+        </form>
+      </div>
     </div>
     <div class="card table-wrap">
       <table>
@@ -1590,6 +1638,7 @@ const AuditView = {
             <td>{{ r.details }}</td>
             <td class="muted small">{{ r.ip }}</td>
           </tr>
+          <tr v-if="loaded && !shown.length"><td colspan="5" class="empty-row">{{ rows.length ? 'Nicio înregistrare nu corespunde filtrului.' : 'Jurnalul este gol.' }}</td></tr>
         </tbody>
       </table>
     </div>`,
@@ -1597,6 +1646,7 @@ const AuditView = {
 
 // ---------- setări ----------
 const SettingsView = {
+  components: { BackupView },
   data: () => ({ f: null, busy: false, testTo: '' }),
   async mounted() {
     await run(async () => this.fill(await api('/api/admin/settings')));
@@ -1619,55 +1669,85 @@ const SettingsView = {
     },
   },
   template: /*html*/ `
-    <div class="page-head"><h1>Setări</h1></div>
-    <form v-if="f" class="card settings" @submit.prevent="save">
-      <h2>E-mail (SMTP)</h2>
-      <p class="muted settings-sub">Folosit pentru notificările de semnare. Setările sunt păstrate în baza de date, deci rămân neschimbate la actualizarea aplicației. Lăsați serverul gol pentru a dezactiva e-mailurile.</p>
-      <div class="row">
-        <label class="field grow2"><span>Server SMTP</span><input v-model="f.smtp_host" maxlength="200" placeholder="ex. mail.ansc.md" /></label>
-        <label class="field"><span>Port</span><input v-model="f.smtp_port" inputmode="numeric" maxlength="5" placeholder="587" /></label>
-        <label class="field"><span>Securitate</span>
-          <select v-model="f.smtp_secure"><option value="">STARTTLS / automat</option><option value="tls">TLS direct (465)</option></select>
-        </label>
+    <div class="settings-page">
+      <div class="page-head">
+        <div>
+          <h1>Setări</h1>
+          <p class="muted page-sub">E-mailul pentru notificările de semnare și copia de rezervă a datelor.</p>
+        </div>
       </div>
-      <div class="row">
-        <label class="field"><span>Utilizator</span><input v-model="f.smtp_user" maxlength="200" autocomplete="off" /></label>
-        <label class="field"><span>Parolă</span>
-          <input v-model="f.smtp_pass" type="password" autocomplete="new-password" :placeholder="f.has_password ? '•••••••• (salvată; completați doar pentru a o schimba)' : ''" />
-        </label>
+      <div class="settings-grid">
+        <form v-if="f" class="card panel" @submit.prevent="save">
+          <div class="panel-head">
+            <h2>E-mail (SMTP)</h2>
+            <span class="pill" :class="f.smtp_host ? 'green' : 'gray'">{{ f.smtp_host ? 'Activ' : 'Dezactivat' }}</span>
+          </div>
+          <p class="muted small">Setările sunt păstrate în baza de date și rămân la actualizarea aplicației. Lăsați serverul gol pentru a dezactiva e-mailurile.</p>
+          <div class="row">
+            <label class="field grow2"><span>Server SMTP</span><input v-model="f.smtp_host" maxlength="200" placeholder="ex. mail.ansc.md" /></label>
+            <label class="field"><span>Port</span><input v-model="f.smtp_port" inputmode="numeric" maxlength="5" placeholder="587" /></label>
+            <label class="field"><span>Securitate</span>
+              <select v-model="f.smtp_secure"><option value="">STARTTLS / automat</option><option value="tls">TLS direct (465)</option></select>
+            </label>
+          </div>
+          <div class="row">
+            <label class="field"><span>Utilizator</span><input v-model="f.smtp_user" maxlength="200" autocomplete="off" /></label>
+            <label class="field"><span>Parolă</span>
+              <input v-model="f.smtp_pass" type="password" autocomplete="new-password" :disabled="f.clear_password" :placeholder="f.has_password ? '•••••••• (salvată)' : ''" />
+            </label>
+          </div>
+          <label v-if="f.has_password" class="check pull-up"><input type="checkbox" v-model="f.clear_password" /> Șterge parola salvată</label>
+          <div class="row">
+            <label class="field"><span>Expeditor</span><input v-model="f.smtp_from" maxlength="200" placeholder="e-Management ANSC <notificari@ansc.md>" /></label>
+            <label class="field"><span>Adresa aplicației (linkuri în e-mailuri)</span><input v-model="f.app_url" maxlength="200" placeholder="ex. https://documente.ansc.md" /></label>
+          </div>
+          <div class="panel-foot">
+            <button class="btn primary" :disabled="busy">Salvează setările</button>
+          </div>
+          <div class="test-box">
+            <div><b>Verificare</b> <span class="muted small">— salvați setările, apoi trimiteți un e-mail de test.</span></div>
+            <div class="addrow">
+              <input v-model="testTo" type="email" placeholder="adresa@exemplu.md" aria-label="Adresa pentru e-mailul de test" />
+              <button type="button" class="btn" :disabled="busy || !testTo || !f.smtp_host" @click="test">Trimite test</button>
+            </div>
+          </div>
+        </form>
+        <div v-else class="card panel boot-panel"><span class="spinner"></span></div>
+        <BackupView />
       </div>
-      <label v-if="f.has_password" class="check pull-up"><input type="checkbox" v-model="f.clear_password" /> Șterge parola salvată</label>
-      <label class="field"><span>Expeditor</span><input v-model="f.smtp_from" maxlength="200" placeholder="e-Management ANSC <notificari@ansc.md>" /></label>
-      <label class="field"><span>Adresa aplicației (pentru linkurile din e-mailuri)</span><input v-model="f.app_url" maxlength="200" placeholder="ex. https://documente.ansc.md — implicit, adresa de la care lucrați" /></label>
-      <button class="btn primary" :disabled="busy">Salvează setările</button>
-
-      <h2 class="mt24">Verificare</h2>
-      <p class="muted settings-sub tight">Salvați setările, apoi trimiteți un e-mail de test.</p>
-      <div class="addrow narrow">
-        <input v-model="testTo" type="email" placeholder="adresa@exemplu.md" />
-        <button type="button" class="btn" :disabled="busy || !testTo" @click="test">Trimite test</button>
-      </div>
-    </form>`,
+    </div>`,
 };
 
 // ---------- aplicația ----------
 const App = {
-  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, UsersView, CategoriesView, BackupView, SettingsView, AuditView },
-  data: () => ({ pass: null, passBusy: false }),
+  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, UsersView, CategoriesView, SettingsView, AuditView },
+  data: () => ({ pass: null, passBusy: false, bump: false }),
   computed: {
     store: () => store,
     inbox: inboxCount,
-    nav() {
-      const items = [['documente', 'Documente', 'DocsView'], ['notificari', 'Notificări', 'InboxView'], ['organigrama', 'Organigramă', 'OrgView']];
-      if (isAdmin()) items.push(['utilizatori', 'Utilizatori', 'UsersView'], ['categorii', 'Categorii', 'CategoriesView'], ['backup', 'Backup', 'BackupView'], ['setari', 'Setări', 'SettingsView'], ['jurnal', 'Jurnal', 'AuditView']);
+    // [adresă, denumire, componentă]; notificările au propriul buton (cutia poștală) în dreapta barei
+    routes() {
+      const items = [['documente', 'Documente', 'DocsView'], ['organigrama', 'Organigramă', 'OrgView'], ['notificari', 'Notificări', 'InboxView']];
+      if (isAdmin()) items.push(['utilizatori', 'Utilizatori', 'UsersView'], ['categorii', 'Categorii', 'CategoriesView'], ['setari', 'Setări', 'SettingsView'], ['jurnal', 'Jurnal', 'AuditView']);
       return items;
     },
+    nav() {
+      return this.routes.filter((n) => n[0] !== 'notificari');
+    },
     view() {
-      const item = this.nav.find((n) => n[0] === store.route);
+      // adresa veche „#backup” duce acum la Setări, unde se află și copia de rezervă
+      const route = store.route === 'backup' ? 'setari' : store.route;
+      const item = this.routes.find((n) => n[0] === route);
       return item ? item[2] : 'DocsView';
     },
+    pageClass() {
+      return { wide: this.view === 'CategoriesView', fit: this.view === 'SettingsView' };
+    },
+    inboxLabel() {
+      return this.inbox ? 'Notificări: ' + this.inbox + (this.inbox === 1 ? ' nouă' : ' noi') : 'Notificări: nicio notificare nouă';
+    },
     title() {
-      const item = store.me && !store.me.must_change && this.nav.find((n) => n[2] === this.view);
+      const item = store.me && !store.me.must_change && this.routes.find((n) => n[2] === this.view);
       return (item && this.inbox ? '(' + this.inbox + ') ' : '') + (item ? item[1] + ' · ' : '') + 'e-Management ANSC';
     },
   },
@@ -1692,6 +1772,14 @@ const App = {
       },
       immediate: true,
     },
+    // o notificare nouă face cutia poștală să „sară” o dată, pe lângă animația continuă
+    inbox(n, old) {
+      if (n > old) {
+        this.bump = false;
+        requestAnimationFrame(() => (this.bump = true));
+        setTimeout(() => (this.bump = false), 900);
+      }
+    },
   },
   template: /*html*/ `
     <template v-if="store.ready">
@@ -1702,16 +1790,22 @@ const App = {
           <div class="topbar-in">
             <Brand />
             <nav class="nav">
-              <a v-for="n in nav" :key="n[0]" :href="'#' + n[0]" :class="{ on: view === n[2], sep: n[0] === 'utilizatori' }">{{ n[1] }}<span v-if="n[0] === 'notificari' && inbox" class="nav-count">{{ inbox }}</span></a>
+              <a v-for="n in nav" :key="n[0]" :href="'#' + n[0]" :class="{ on: view === n[2], sep: n[0] === 'utilizatori' }">{{ n[1] }}</a>
             </nav>
             <div class="userbox">
+              <a href="#notificari" class="mailbox" :class="{ on: view === 'InboxView', has: inbox, bump }" :title="inboxLabel" :aria-label="inboxLabel">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 8.5 12 14l9-5.5"/><rect x="3" y="5" width="18" height="14" rx="2.5"/>
+                </svg>
+                <span v-if="inbox" class="mailbox-count">{{ inbox > 99 ? '99+' : inbox }}</span>
+              </a>
               <span class="name">{{ store.me.full_name }}</span>
               <button class="btn sm" @click="pass = { current: '', next: '', again: '' }">Parolă</button>
               <button class="btn sm" @click="logout">Ieșire</button>
             </div>
           </div>
         </header>
-        <main class="page"><component :is="view" /></main>
+        <main class="page" :class="pageClass"><component :is="view" /></main>
         <Modal v-if="pass" title="Schimbă parola" :busy="passBusy" @close="pass = null" @submit="savePass"><PasswordFields v-model="pass" /></Modal>
       </template>
     </template>

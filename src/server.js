@@ -105,6 +105,7 @@ const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
 const isHttps = (req) => req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https';
 
 // Jurnal de audit: cine, ce și când. Nu se șterge la import și nu poate fi modificat din interfață.
+const AUDIT_RETENTION_DAYS = 90;
 const auditInsert = db.prepare('INSERT INTO audit_log (username, ip, action, details) VALUES (?, ?, ?, ?)');
 function audit(req, action, details = '', username) {
   try {
@@ -793,9 +794,25 @@ app.register(async (app) => {
     return { ok: true };
   });
 
-  app.get('/api/admin/audit', { preHandler: requireAdmin }, async () =>
-    db.prepare('SELECT id, at, username, ip, action, details FROM audit_log ORDER BY id DESC LIMIT 2000').all()
-  );
+  app.get('/api/admin/audit', { preHandler: requireAdmin }, async () => ({
+    rows: db.prepare('SELECT id, at, username, ip, action, details FROM audit_log ORDER BY id DESC LIMIT 2000').all(),
+    total: db.prepare('SELECT COUNT(*) AS n FROM audit_log').get().n,
+    oldest: db.prepare('SELECT MIN(at) AS at FROM audit_log').get().at,
+    retentionDays: AUDIT_RETENTION_DAYS,
+  }));
+  // Șterge înregistrările până la data indicată, inclusiv. Ziua de azi rămâne întotdeauna în jurnal,
+  // iar ștergerea însăși este înregistrată, ca să nu poată trece neobservată.
+  app.post('/api/admin/audit/prune', { preHandler: requireAdmin }, async (req) => {
+    const until = str(req.body?.until, 10);
+    if (!validDate(until)) throw fail(400, 'Alegeți o dată validă.');
+    // data de azi după ceasul local al serverului (același fus orar cu utilizatorii)
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    if (until >= today) throw fail(400, 'Se pot șterge doar înregistrările din zilele anterioare celei de azi.');
+    const r = db.prepare("DELETE FROM audit_log WHERE at < date(?, '+1 day')").run(until);
+    audit(req, 'jurnal curățat', `${r.changes} înregistrări până la ${until.split('-').reverse().join('.')} inclusiv`);
+    return { deleted: Number(r.changes) };
+  });
 
   // --- copie de rezervă completă (admin) ---
   app.get('/api/admin/export', { preHandler: requireAdmin }, async (req, reply) => {
@@ -879,6 +896,18 @@ function cleanupLeftovers() {
   }
 }
 cleanupLeftovers();
+
+// Jurnalul păstrează ultimele 90 de zile; ce este mai vechi se șterge la pornire și apoi o dată pe zi.
+function pruneOldAudit() {
+  try {
+    const r = db.prepare("DELETE FROM audit_log WHERE at < datetime('now', ?)").run(`-${AUDIT_RETENTION_DAYS} days`);
+    if (r.changes) auditInsert.run('sistem', '', 'jurnal curățat automat', `${r.changes} înregistrări mai vechi de ${AUDIT_RETENTION_DAYS} de zile`);
+  } catch (e) {
+    console.error('Curățarea jurnalului a eșuat:', e.message);
+  }
+}
+pruneOldAudit();
+setInterval(pruneOldAudit, 24 * 3600 * 1000).unref();
 
 process.on('unhandledRejection', (e) => app.log.error(e));
 

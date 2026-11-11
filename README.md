@@ -49,7 +49,9 @@ Copia de rezervă se face din pagina **Backup** (admin): un singur fișier `.ans
 - **Documente**: afișate cronologic după *data documentului* (nu după data adăugării), grupate pe luni, cu filtrare după categorie, etichetă, an și căutare.
 - **Categorii și etichete**: definite de administrator (ex. „Resurse umane” → „Concedii”).
 - **Vizibilitate**: fiecare document este vizibil tuturor angajaților sau doar subdiviziunilor și persoanelor selectate. O subdiviziune selectată include și subdiviziunile din subordinea ei. Autorul și administratorii văd documentul întotdeauna.
-- **Notificări**: fiecare utilizator are o pagină cu documentele pe care încă nu le-a văzut și cu cele care îi așteaptă semnătura.
+- **Notificări**: pictograma cutiei poștale din dreapta barei de sus arată numărul de documente nevăzute sau care așteaptă semnătura și se animă când există ceva nou; pagina ei listează aceste documente.
+- **Jurnal**: păstrează ultimele 90 de zile (cele mai vechi se șterg automat la pornire și zilnic). Administratorul poate șterge manual înregistrările până la o dată anterioară zilei de azi; ștergerea rămâne consemnată.
+- **Setări**: serverul de e-mail și copia de rezervă (export / import) sunt pe aceeași pagină.
 - **Semnare în lanț**: autorul încarcă documentul și stabilește ordinea semnatarilor. Primul îl descarcă, îl semnează digital (în afara aplicației) și încarcă versiunea semnată în aceeași înregistrare; apoi următorul descarcă acea versiune, și tot așa. Persoana aflată la rând primește un e-mail. Aplicația nu validează criptografic semnătura; refuză doar un fișier identic cu unul deja existent.
 - **Organigramă**: vizibilă tuturor angajaților, ca schemă (arbore cu linii de legătură, ramuri care se pot restrânge, mărire și deplasare prin tragere) sau ca listă indentată. Căutarea găsește persoane după nume, funcție sau e-mail și subdiviziuni, și le evidențiază în schemă. Administratorul o editează direct din pagină.
 - **Utilizatori**: o persoană care a semnat documente nu poate fi ștearsă (semnăturile rămân în istoric), doar dezactivată; la dezactivarea unui semnatar aflat la rând, aplicația avertizează și marchează lanțul ca blocat.

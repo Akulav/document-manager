@@ -397,6 +397,66 @@ label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-si
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn:disabled, .btn:disabled:hover { cursor: not-allowed; }
 
+/* ---------- notificări: cutia poștală din bara de sus ---------- */
+.mailbox { position: relative; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; color: #dbe6f3; transition: background .12s, color .12s; }
+.mailbox svg { width: 21px; height: 21px; }
+.mailbox:hover, .mailbox.on { background: rgba(255,255,255,.16); color: #fff; }
+.mailbox:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.mailbox.has { color: #fff; }
+.mailbox.has svg { animation: mail-ring 4s ease-in-out infinite; transform-origin: 50% 20%; }
+.mailbox.bump svg { animation: mail-bump .8s cubic-bezier(.3,1.6,.5,1); }
+.mailbox-count { position: absolute; top: 1px; right: -3px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: #e5484d; color: #fff; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; box-shadow: 0 0 0 2px #1d4e89; font-variant-numeric: tabular-nums; }
+.mailbox-count::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: #e5484d; z-index: -1; animation: mail-pulse 2s ease-out infinite; }
+@keyframes mail-ring {
+  0%, 82%, 100% { transform: rotate(0); }
+  85% { transform: rotate(-12deg); } 88% { transform: rotate(10deg); } 91% { transform: rotate(-7deg); } 94% { transform: rotate(4deg); } 97% { transform: rotate(-2deg); }
+}
+@keyframes mail-bump { 0% { transform: scale(1); } 40% { transform: scale(1.3) translateY(-2px); } 100% { transform: scale(1); } }
+@keyframes mail-pulse { 0% { transform: scale(1); opacity: .65; } 100% { transform: scale(2); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .mailbox svg, .mailbox-count::after { animation: none !important; } }
+
+/* ---------- categorii: pagină mai lată pe ecranele mari ---------- */
+.page.wide { max-width: 1600px; }
+.page.wide .cats { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; }
+
+/* ---------- setări + copie de rezervă: o singură pagină, fără derulare ---------- */
+.page.fit { height: calc(100vh - 58px); padding-bottom: 24px; display: flex; flex-direction: column; }
+.settings-page { flex: 1; min-height: 0; display: flex; flex-direction: column; width: 100%; max-width: 1180px; margin: 0 auto; }
+.settings-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 20px; align-content: center; }
+.settings-col { display: grid; gap: 20px; grid-template-rows: 1fr 1fr; min-height: 0; }
+.panel { padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.panel > p { margin: 0 0 6px; }
+.panel .field { margin-bottom: 10px; }
+.panel-head { display: flex; align-items: center; gap: 10px; }
+.panel-head h2 { flex: 1; }
+.panel-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: auto; padding-top: 4px; }
+.pill { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.pill.green { background: #ecfdf3; color: #05603a; }
+.pill.gray { background: #eef0f3; color: var(--muted); }
+.pill.red { background: #fef3f2; color: var(--danger); }
+.danger-panel { border-top: 3px solid var(--danger); }
+.test-box { margin-top: 12px; padding: 12px 14px; border-radius: 10px; background: #f6f8fb; border: 1px solid var(--border); }
+.test-box .addrow { margin-top: 8px; }
+.filepick { position: relative; display: flex; align-items: center; gap: 10px; border: 2px dashed var(--border); border-radius: 10px; padding: 12px 14px; cursor: pointer; color: var(--muted); background: #fafbfc; transition: border-color .12s, background .12s; min-width: 0; }
+.filepick:hover { border-color: #c3cad6; background: #fff; }
+.filepick.chosen { border-style: solid; border-color: var(--danger); color: var(--text); background: #fff; }
+.filepick input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.filepick:focus-within { outline: 2px solid #9db9dc; outline-offset: 1px; }
+.filepick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filepick::before { content: "⤓"; font-size: 18px; line-height: 1; }
+.boot-panel { display: grid; place-items: center; }
+/* pe ecrane mici sau joase pagina revine la derularea normală */
+@media (max-width: 960px), (max-height: 680px) {
+  .page.fit { height: auto; display: block; }
+  .settings-grid { grid-template-columns: 1fr; }
+  .settings-col { grid-template-rows: none; }
+}
+
+/* ---------- jurnal: curățare ---------- */
+.prune { display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.prune-label { font-size: 13px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.prune input[type="date"] { width: auto; padding: 5px 8px; }
+
 /* meniul administratorului are multe intrări: pe ecrane medii devine mai compact, ca să rămână pe un rând */
 @media (max-width: 1240px) and (min-width: 861px) {
   .topbar-in { gap: 14px; }
@@ -404,6 +464,8 @@ label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-si
   .nav a { padding: 6px 8px; font-size: 13.5px; }
   .nav a.sep { margin-left: 8px; }
   .userbox .name { display: none; }
+}
+@media (max-width: 1100px) and (min-width: 861px) {
   .brand > span { display: none; }
 }
 @media (max-width: 860px) {
