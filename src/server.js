@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
 const Fastify = require('fastify');
-const { db, tx, hashPassword, checkPassword, UPLOAD_DIR, INITIAL_PASSWORD_FILE } = require('./db');
+const { db, tx, hashPassword, checkPassword, UPLOAD_DIR, DATA_DIR, INITIAL_PASSWORD_FILE } = require('./db');
 const mail = require('./mail');
 const backup = require('./backup');
 
@@ -16,13 +16,30 @@ const ROLES = ['admin', 'editor', 'user'];
 
 // Antetele X-Forwarded-* sunt crezute doar dacă vin de la un proxy de pe aceeași mașină (cazul obișnuit).
 // Astfel adresa IP reală ajunge în jurnal și în limitarea autentificărilor, fără a putea fi falsificată din rețea.
-const app = Fastify({ logger: { level: 'warn' }, trustProxy: process.env.TRUST_PROXY || 'loopback' });
+// TRUST_PROXY: „true” = orice proxy, un număr = câte proxy-uri în față, altfel adrese IP/CIDR separate prin virgulă.
+function trustProxySetting(v) {
+  if (!v) return 'loopback';
+  if (v === 'true') return true;
+  if (/^\d+$/.test(v)) return Number(v);
+  return v;
+}
+const app = Fastify({ logger: { level: 'warn' }, trustProxy: trustProxySetting(process.env.TRUST_PROXY) });
 
 // ---------- utilitare ----------
 const fail = (code, message) => Object.assign(new Error(message), { statusCode: code, expose: true });
-const str = (v, max) => String(v ?? '').trim().slice(0, max);
-const idOrNull = (v) => (v === null || v === undefined || v === '' ? null : Number.isInteger(Number(v)) ? Number(v) : null);
-const idList = (v) => [...new Set((Array.isArray(v) ? v : []).map(Number).filter(Number.isInteger))];
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+const str = (v, max) => String(v ?? '').replace(CONTROL, '').trim().slice(0, max);
+const isId = (n) => Number.isSafeInteger(n) && n > 0;
+const idOrNull = (v) => (v === null || v === undefined || v === '' ? null : isId(Number(v)) ? Number(v) : null);
+const idList = (v) => [...new Set((Array.isArray(v) ? v : []).slice(0, 2000).map(Number).filter(isId))];
+// Identificatorul din adresă (/api/.../:id); orice altceva decât un număr pozitiv înseamnă „nu există”.
+const paramId = (req) => {
+  const n = Number(req.params.id);
+  if (!isId(n)) throw fail(404, 'Înregistrarea nu a fost găsită.');
+  return n;
+};
+const EMAIL_RE = /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]+$/;
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const lastId = (r) => Number(r.lastInsertRowid);
 
@@ -76,9 +93,11 @@ function recordFail(key, max) {
   }
   loginFails.set(key, f);
 }
+const reminded = new Map(); // document -> momentul ultimei retrimiteri a e-mailului de semnare
 setInterval(() => {
   const now = Date.now();
   for (const [k, f] of loginFails) if (f.until < now && f.last < now - 30 * 60000) loginFails.delete(k);
+  for (const [k, t] of reminded) if (t < now - 10 * 60000) reminded.delete(k);
 }, 5 * 60000).unref();
 // Verificată când utilizatorul nu există, ca timpul de răspuns să nu trădeze ce conturi sunt reale.
 const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
@@ -149,7 +168,9 @@ function readUser(body) {
   const role = ROLES.includes(body.role) ? body.role : 'user';
   const unit_id = idOrNull(body.unit_id);
   if (unit_id !== null && !unitMap().has(unit_id)) throw fail(400, 'Subdiviziunea selectată nu există.');
-  return { full_name, username, role, unit_id, position: str(body.position, 150), email: str(body.email, 150), active: body.active === false ? 0 : 1 };
+  const email = str(body.email, 150);
+  if (email && !EMAIL_RE.test(email)) throw fail(400, 'Adresa de e-mail nu este validă.');
+  return { full_name, username, role, unit_id, position: str(body.position, 150), email, active: body.active === false ? 0 : 1 };
 }
 
 function readPassword(v) {
@@ -161,14 +182,20 @@ function readPassword(v) {
   return p;
 }
 
-function readDoc(data) {
-  if (!data || typeof data !== 'object') throw fail(400, 'Date lipsă.');
+// Data calendaristică reală (respinge 2024-02-31 etc.), într-un interval rezonabil.
+function validDate(s) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(s + 'T00:00:00Z');
+  const y = Number(s.slice(0, 4));
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s && y >= 1900 && y <= 2200;
+}
+
+function readDoc(data, docId = null) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw fail(400, 'Date lipsă.');
   const title = str(data.title, 300);
   if (!title) throw fail(400, 'Introduceți denumirea documentului.');
   const doc_date = str(data.doc_date, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(doc_date) || Number.isNaN(Date.parse(doc_date))) {
-    throw fail(400, 'Indicați data documentului.');
-  }
+  if (!validDate(doc_date)) throw fail(400, 'Indicați o dată validă a documentului.');
   const visibility = data.visibility === 'restricted' ? 'restricted' : 'all';
   const exists = (table, ids) => {
     const q = db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`);
@@ -183,15 +210,19 @@ function readDoc(data) {
     tagIds: exists('tags', idList(data.tagIds)),
     unitIds: visibility === 'restricted' ? exists('units', idList(data.unitIds)) : [],
     userIds: visibility === 'restricted' ? exists('users', idList(data.userIds)) : [],
-    signerIds: exists('users', idList(data.signerIds)),
+    // semnatarii noi trebuie să aibă cont activ (altfel lanțul s-ar bloca); cei deja în lanț rămân
+    signerIds: idList(data.signerIds).filter((uid) => signerOk.get(uid, docId ?? 0, uid)),
     removeFileIds: idList(data.removeFileIds),
   };
 }
+const signerOk = db.prepare(
+  'SELECT 1 FROM users u WHERE u.id = ? AND (u.active = 1 OR EXISTS (SELECT 1 FROM document_signers s WHERE s.document_id = ? AND s.user_id = ?))'
+);
 
-async function readDocForm(req) {
+async function readDocForm(req, docId = null) {
   const { data, saved } = await readUploads(req);
   try {
-    return { doc: readDoc(data), saved };
+    return { doc: readDoc(data, docId), saved };
   } catch (e) {
     removeStored(saved.map((f) => f.stored));
     throw e;
@@ -235,11 +266,27 @@ async function readUploads(req) {
     throw e;
   }
 }
+// Cererea este refuzată oricum: citim corpul până la capăt (fără a scrie nimic pe disc),
+// altfel browserul vede o conexiune întreruptă în loc de mesajul de eroare.
+async function discardUploads(req) {
+  try {
+    for await (const part of req.parts()) if (part.type === 'file') part.file.resume();
+  } catch {}
+}
 
 // Semnarea este în lanț: următorul la rând este primul semnatar (după poziție) care încă nu a semnat.
 function currentSigner(docId) {
   const r = db.prepare('SELECT user_id FROM document_signers WHERE document_id = ? AND signed_at IS NULL ORDER BY position, user_id LIMIT 1').get(docId);
   return r ? r.user_id : null;
+}
+
+// Documentele la care persoana este acum la rând să semneze.
+function signTurnsOf(userId) {
+  return db
+    .prepare('SELECT document_id FROM document_signers WHERE user_id = ? AND signed_at IS NULL')
+    .all(userId)
+    .map((r) => r.document_id)
+    .filter((docId) => currentSigner(docId) === userId);
 }
 
 function saveDocLinks(id, doc, saved) {
@@ -274,7 +321,19 @@ async function notifySigners(req, docId, userIds) {
   return mail.sendSignRequests(doc, userIds.map((id) => q.get(id)).filter(Boolean), `${req.protocol}://${req.host}`);
 }
 
-function listDocuments(user, onlyId) {
+// Grupează rândurile după document; elimină coloana document_id din fiecare rând.
+function byDocument(rows, pick = (r) => r) {
+  const map = new Map();
+  for (const { document_id, ...r } of rows) {
+    if (!map.has(document_id)) map.set(document_id, []);
+    map.get(document_id).push(pick(r));
+  }
+  return map;
+}
+
+// Lista completă se citește cu câte o singură interogare pe tabel (nu câte cinci pentru fiecare document),
+// ca pagina să rămână rapidă și cu mii de documente.
+function listDocuments(user) {
   const acc = accessClause(user);
   const rows = db
     .prepare(
@@ -282,35 +341,39 @@ function listDocuments(user, onlyId) {
               a.full_name AS author,
               EXISTS (SELECT 1 FROM document_seen s WHERE s.document_id = d.id AND s.user_id = ?) AS seen
        FROM documents d LEFT JOIN users a ON a.id = d.created_by
-       WHERE ${acc.sql} ${onlyId ? 'AND d.id = ?' : ''}
+       WHERE ${acc.sql}
        ORDER BY d.doc_date DESC, d.id DESC`
     )
-    .all(user.id, ...acc.params, ...(onlyId ? [onlyId] : []));
-  const signers = db.prepare(
-    'SELECT s.user_id AS id, u.full_name AS name, s.signed_at FROM document_signers s JOIN users u ON u.id = s.user_id WHERE s.document_id = ? ORDER BY s.position, s.user_id'
+    .all(user.id, ...acc.params);
+  if (!rows.length) return [];
+  const signers = byDocument(
+    db.prepare(
+      'SELECT s.document_id, s.user_id AS id, u.full_name AS name, u.active, s.signed_at FROM document_signers s JOIN users u ON u.id = s.user_id ORDER BY s.position, s.user_id'
+    ).all(),
+    (r) => ({ ...r, active: !!r.active })
   );
-  const tags = db.prepare('SELECT tag_id FROM document_tags WHERE document_id = ?');
-  const units = db.prepare('SELECT unit_id FROM document_units WHERE document_id = ?');
-  const users = db.prepare('SELECT user_id FROM document_users WHERE document_id = ?');
-  const files = db.prepare('SELECT id, name, size, signed_by, signed_by_name, created_at FROM document_files WHERE document_id = ? ORDER BY id');
+  const tags = byDocument(db.prepare('SELECT document_id, tag_id FROM document_tags').all(), (r) => r.tag_id);
+  const units = byDocument(db.prepare('SELECT document_id, unit_id FROM document_units').all(), (r) => r.unit_id);
+  const users = byDocument(db.prepare('SELECT document_id, user_id FROM document_users').all(), (r) => r.user_id);
+  const files = byDocument(db.prepare('SELECT document_id, id, name, size, signed_by, signed_by_name, created_at FROM document_files ORDER BY id').all());
   return rows.map(({ seen, ...d }) => {
-    const sig = signers.all(d.id);
+    const sig = signers.get(d.id) || [];
     const mine = sig.find((s) => s.id === user.id);
     const turn = sig.find((s) => !s.signed_at);
     return {
-    ...d,
-    signers: sig,
-    signTurn: turn ? turn.id : null,
-    // 'pending' = este rândul meu; 'waiting' = aștept să semneze cei dinaintea mea
-    mySign: mine ? (mine.signed_at ? 'signed' : turn.id === user.id ? 'pending' : 'waiting') : null,
-    canDelete: canDelete(user, d, sig),
-    // „nevăzut” = document al altcuiva, apărut după crearea contului și încă nedeschis
-    unseen: !seen && d.created_by !== user.id && d.created_at >= user.created_at,
-    tagIds: tags.all(d.id).map((r) => r.tag_id),
-    unitIds: units.all(d.id).map((r) => r.unit_id),
-    userIds: users.all(d.id).map((r) => r.user_id),
-    files: files.all(d.id),
-    canEdit: canEdit(user, d),
+      ...d,
+      signers: sig,
+      signTurn: turn ? turn.id : null,
+      // 'pending' = este rândul meu; 'waiting' = aștept să semneze cei dinaintea mea
+      mySign: mine ? (mine.signed_at ? 'signed' : turn && turn.id === user.id ? 'pending' : 'waiting') : null,
+      canDelete: canDelete(user, d, sig),
+      // „nevăzut” = document al altcuiva, apărut după crearea contului și încă nedeschis
+      unseen: !seen && d.created_by !== user.id && d.created_at >= user.created_at,
+      tagIds: tags.get(d.id) || [],
+      unitIds: units.get(d.id) || [],
+      userIds: users.get(d.id) || [],
+      files: files.get(d.id) || [],
+      canEdit: canEdit(user, d),
     };
   });
 }
@@ -348,6 +411,8 @@ app.addHook('onSend', async (req, reply) => {
   reply.header('X-Frame-Options', 'DENY');
   reply.header('Referrer-Policy', 'same-origin');
   reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  reply.header('Cross-Origin-Opener-Policy', 'same-origin');
+  reply.header('Cross-Origin-Resource-Policy', 'same-origin');
   if (isHttps(req)) reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   if (req.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
   // fișierele descărcate nu primesc CSP-ul aplicației: vizualizatorul PDF al browserului are nevoie de propriile resurse
@@ -356,11 +421,15 @@ app.addHook('onSend', async (req, reply) => {
 
 app.setErrorHandler((err, req, reply) => {
   if (err.code === 'FST_REQ_FILE_TOO_LARGE') return reply.code(413).send({ error: 'Fișierul depășește limita de 50 MB.' });
-  if (err.code === 'FST_FILES_LIMIT') return reply.code(413).send({ error: 'Cel mult 10 fișiere per document.' });
-  const code = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500;
+  if (err.code === 'FST_FILES_LIMIT') return reply.code(413).send({ error: 'Cel mult 10 fișiere la o încărcare.' });
+  if (err.code === 'FST_FIELDS_LIMIT' || err.code === 'FST_PARTS_LIMIT') return reply.code(413).send({ error: 'Formularul conține prea multe câmpuri.' });
+  if (err.code === 'FST_INVALID_MULTIPART_CONTENT_TYPE') return reply.code(400).send({ error: 'Formularul trebuie trimis ca multipart/form-data.' });
+  if (err.code === 'FST_ERR_CTP_BODY_TOO_LARGE') return reply.code(413).send({ error: 'Cererea este prea mare.' });
+  const code = err.statusCode && err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 500;
   if (code >= 500) req.log.error(err);
   reply.code(code).send({ error: err.expose ? err.message : code >= 500 ? 'Eroare internă de server.' : 'Cerere invalidă.' });
 });
+app.setNotFoundHandler((req, reply) => reply.code(404).send({ error: 'Pagina sau resursa nu există.' }));
 
 // ---------- rute ----------
 app.register(async (app) => {
@@ -407,10 +476,18 @@ app.register(async (app) => {
   app.get('/api/me', { preHandler: requireUser, config: { allowMustChange: true } }, async (req) => ({ ...req.user, mailEnabled: mail.enabled() }));
 
   app.post('/api/password', { preHandler: requireUser, config: { allowMustChange: true } }, async (req) => {
+    // o sesiune lăsată deschisă nu trebuie să permită ghicirea parolei la nesfârșit
+    const key = 'pw|' + req.user.id;
+    if (isBlocked(key)) throw fail(429, 'Prea multe încercări. Reîncercați peste câteva minute.');
+    const current = String(req.body?.current ?? '').slice(0, 200);
     const row = db.prepare('SELECT pass_hash FROM users WHERE id = ?').get(req.user.id);
-    if (!checkPassword(String(req.body?.current ?? ''), row.pass_hash)) throw fail(400, 'Parola curentă este incorectă.');
+    if (!checkPassword(current, row.pass_hash)) {
+      recordFail(key, 8);
+      throw fail(400, 'Parola curentă este incorectă.');
+    }
+    loginFails.delete(key);
     const next = readPassword(req.body?.next);
-    if (next === String(req.body.current)) throw fail(400, 'Parola nouă trebuie să difere de cea curentă.');
+    if (next === current) throw fail(400, 'Parola nouă trebuie să difere de cea curentă.');
     db.prepare('UPDATE users SET pass_hash = ?, must_change = 0 WHERE id = ?').run(hashPassword(next), req.user.id);
     db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(req.user.id, sha(req.cookies.sid));
     // parola inițială generată la instalare nu mai este valabilă, deci fișierul cu ea dispare
@@ -428,21 +505,25 @@ app.register(async (app) => {
   app.post('/api/units', { preHandler: requireAdmin }, async (req) => {
     const u = readUnit(req.body || {}, null);
     const r = db.prepare('INSERT INTO units (name, type, parent_id, sort) VALUES (?, ?, ?, ?)').run(u.name, u.type, u.parent_id, u.sort);
+    audit(req, 'subdiviziune adăugată', u.name);
     return { id: lastId(r) };
   });
   app.put('/api/units/:id', { preHandler: requireAdmin }, async (req) => {
-    const id = Number(req.params.id);
+    const id = paramId(req);
     const u = readUnit(req.body || {}, id);
     const r = db.prepare('UPDATE units SET name = ?, type = ?, parent_id = ?, sort = ? WHERE id = ?').run(u.name, u.type, u.parent_id, u.sort, id);
     if (!r.changes) throw fail(404, 'Subdiviziunea nu a fost găsită.');
+    audit(req, 'subdiviziune modificată', u.name);
     return { ok: true };
   });
   app.delete('/api/units/:id', { preHandler: requireAdmin }, async (req) => {
-    const id = Number(req.params.id);
+    const id = paramId(req);
     if (db.prepare('SELECT 1 FROM units WHERE parent_id = ?').get(id)) throw fail(400, 'Mutați sau ștergeți mai întâi subdiviziunile din subordine.');
     if (db.prepare('SELECT 1 FROM users WHERE unit_id = ?').get(id)) throw fail(400, 'Mutați mai întâi angajații din această subdiviziune.');
+    const old = db.prepare('SELECT name FROM units WHERE id = ?').get(id);
     const r = db.prepare('DELETE FROM units WHERE id = ?').run(id);
     if (!r.changes) throw fail(404, 'Subdiviziunea nu a fost găsită.');
+    audit(req, 'subdiviziune ștearsă', old.name);
     return { ok: true };
   });
 
@@ -451,8 +532,9 @@ app.register(async (app) => {
     db.prepare('SELECT id, username, full_name, position, email, unit_id, role, active, must_change FROM users ORDER BY full_name').all()
   );
   app.post('/api/users', { preHandler: requireAdmin }, async (req) => {
-    const u = readUser(req.body || {});
-    const password = readPassword(req.body.password);
+    const body = req.body || {};
+    const u = readUser(body);
+    const password = readPassword(body.password);
     if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(u.username)) throw fail(400, 'Acest nume de utilizator există deja.');
     const r = db
       .prepare('INSERT INTO users (username, full_name, position, email, unit_id, role, active, pass_hash, must_change) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)')
@@ -461,35 +543,44 @@ app.register(async (app) => {
     return { id: lastId(r) };
   });
   app.put('/api/users/:id', { preHandler: requireAdmin }, async (req) => {
-    const id = Number(req.params.id);
+    const id = paramId(req);
+    const body = req.body || {};
     const old = db.prepare('SELECT id, role, active FROM users WHERE id = ?').get(id);
     if (!old) throw fail(404, 'Utilizatorul nu a fost găsit.');
-    const u = readUser(req.body || {});
+    const u = readUser(body);
+    const password = body.password ? readPassword(body.password) : null;
+    if (id === req.user.id && !u.active) throw fail(400, 'Nu vă puteți dezactiva propriul cont.');
     if (db.prepare('SELECT 1 FROM users WHERE username = ? AND id <> ?').get(u.username, id)) throw fail(400, 'Acest nume de utilizator există deja.');
     if (old.role === 'admin' && old.active && (u.role !== 'admin' || !u.active) && !activeAdminsExcept(id)) {
       throw fail(400, 'Trebuie să rămână cel puțin un administrator activ.');
     }
+    const turns = u.active ? [] : signTurnsOf(id);
     tx(() => {
       db.prepare('UPDATE users SET username = ?, full_name = ?, position = ?, email = ?, unit_id = ?, role = ?, active = ? WHERE id = ?').run(
         u.username, u.full_name, u.position, u.email, u.unit_id, u.role, u.active, id
       );
-      if (req.body.password) {
-        db.prepare('UPDATE users SET pass_hash = ?, must_change = 1 WHERE id = ?').run(hashPassword(readPassword(req.body.password)), id);
-      }
+      if (password) db.prepare('UPDATE users SET pass_hash = ?, must_change = 1 WHERE id = ?').run(hashPassword(password), id);
       // parolă resetată sau cont dezactivat: sesiunile vechi nu mai sunt valabile
-      if ((req.body.password && id !== req.user.id) || !u.active) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+      if ((password && id !== req.user.id) || !u.active) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
     });
-    audit(req, 'utilizator modificat', `${u.username} (${u.role}${u.active ? '' : ', dezactivat'}${req.body.password ? ', parolă resetată' : ''})`);
-    return { ok: true };
+    audit(req, 'utilizator modificat', `${u.username} (${u.role}${u.active ? '' : ', dezactivat'}${password ? ', parolă resetată' : ''})`);
+    return { ok: true, blockedDocs: turns.length };
   });
   app.delete('/api/users/:id', { preHandler: requireAdmin }, async (req) => {
-    const id = Number(req.params.id);
+    const id = paramId(req);
     if (id === req.user.id) throw fail(400, 'Nu vă puteți șterge propriul cont.');
     const old = db.prepare('SELECT username, role, active FROM users WHERE id = ?').get(id);
     if (!old) throw fail(404, 'Utilizatorul nu a fost găsit.');
     if (old.role === 'admin' && old.active && !activeAdminsExcept(id)) throw fail(400, 'Trebuie să rămână cel puțin un administrator activ.');
+    // Cine a semnat deja rămâne în istoricul semnăturilor; contul se poate doar dezactiva.
+    if (db.prepare('SELECT 1 FROM document_signers WHERE user_id = ? AND signed_at IS NOT NULL').get(id)) {
+      throw fail(400, 'Această persoană a semnat documente, iar semnăturile ei trebuie să rămână în istoric. Dezactivați contul în loc să îl ștergeți.');
+    }
+    const turns = signTurnsOf(id);
     db.prepare('DELETE FROM users WHERE id = ?').run(id);
     audit(req, 'utilizator șters', old.username);
+    // documentele la care era rândul acestei persoane trec la următorul semnatar, care trebuie anunțat
+    for (const docId of turns) notifySigners(req, docId, [currentSigner(docId)]).catch((e) => req.log.error(e));
     return { ok: true };
   });
 
@@ -514,12 +605,12 @@ app.register(async (app) => {
   });
   app.put('/api/categories/:id', { preHandler: requireAdmin }, async (req) => {
     const c = readCategory(req.body || {});
-    const r = db.prepare('UPDATE categories SET name = ?, color = ?, sort = ? WHERE id = ?').run(c.name, c.color, c.sort, Number(req.params.id));
+    const r = db.prepare('UPDATE categories SET name = ?, color = ?, sort = ? WHERE id = ?').run(c.name, c.color, c.sort, paramId(req));
     if (!r.changes) throw fail(404, 'Categoria nu a fost găsită.');
     return { ok: true };
   });
   app.delete('/api/categories/:id', { preHandler: requireAdmin }, async (req) => {
-    const r = db.prepare('DELETE FROM categories WHERE id = ?').run(Number(req.params.id));
+    const r = db.prepare('DELETE FROM categories WHERE id = ?').run(paramId(req));
     if (!r.changes) throw fail(404, 'Categoria nu a fost găsită.');
     return { ok: true };
   });
@@ -533,12 +624,12 @@ app.register(async (app) => {
   app.put('/api/tags/:id', { preHandler: requireAdmin }, async (req) => {
     const name = str(req.body?.name, 80);
     if (!name) throw fail(400, 'Introduceți denumirea etichetei.');
-    const r = db.prepare('UPDATE tags SET name = ? WHERE id = ?').run(name, Number(req.params.id));
+    const r = db.prepare('UPDATE tags SET name = ? WHERE id = ?').run(name, paramId(req));
     if (!r.changes) throw fail(404, 'Eticheta nu a fost găsită.');
     return { ok: true };
   });
   app.delete('/api/tags/:id', { preHandler: requireAdmin }, async (req) => {
-    const r = db.prepare('DELETE FROM tags WHERE id = ?').run(Number(req.params.id));
+    const r = db.prepare('DELETE FROM tags WHERE id = ?').run(paramId(req));
     if (!r.changes) throw fail(404, 'Eticheta nu a fost găsită.');
     return { ok: true };
   });
@@ -565,16 +656,14 @@ app.register(async (app) => {
   });
 
   app.put('/api/documents/:id', { preHandler: requireEditor }, async (req) => {
-    const id = Number(req.params.id);
+    const id = paramId(req);
     const old = db.prepare('SELECT id, created_by FROM documents WHERE id = ?').get(id);
     if (!old || !canEdit(req.user, old)) {
-      // consumăm corpul cererii înainte de a răspunde
-      const { saved } = await readDocForm(req).catch(() => ({ saved: [] }));
-      removeStored(saved.map((f) => f.stored));
+      await discardUploads(req);
       throw fail(404, 'Documentul nu a fost găsit sau nu îl puteți modifica.');
     }
-    const { doc, saved } = await readDocForm(req);
-    let removed = [];
+    const { doc, saved } = await readDocForm(req, id);
+    const removed = [];
     const turnBefore = currentSigner(id);
     try {
       tx(() => {
@@ -611,19 +700,23 @@ app.register(async (app) => {
     return { ok: true };
   });
   app.post('/api/documents/:id/seen', { preHandler: requireUser }, async (req) => {
-    const doc = accessibleDoc(req.user, Number(req.params.id));
+    const doc = accessibleDoc(req.user, paramId(req));
     if (!doc) throw fail(404, 'Documentul nu a fost găsit.');
     markSeen(req.user.id, doc.id);
     return { ok: true };
   });
   // Semnatarul aflat la rând încarcă versiunea semnată digital; ea devine versiunea pe care o semnează următorul.
   app.post('/api/documents/:id/sign', { preHandler: requireUser }, async (req) => {
-    const id = Number(req.params.id);
+    const id = paramId(req);
+    const doc = db.prepare('SELECT id, title FROM documents WHERE id = ?').get(id);
+    // verificăm înainte de a scrie ceva pe disc: doar persoana aflată la rând poate încărca
+    if (!doc || currentSigner(id) !== req.user.id) {
+      await discardUploads(req);
+      throw fail(403, 'Nu este rândul dvs. să semnați acest document.');
+    }
     const { saved } = await readUploads(req);
     const stored = saved.map((f) => f.stored);
     try {
-      const doc = db.prepare('SELECT id, title FROM documents WHERE id = ?').get(id);
-      if (!doc || currentSigner(id) !== req.user.id) throw fail(403, 'Nu este rândul dvs. să semnați acest document.');
       if (!saved.length) throw fail(400, 'Încărcați documentul semnat.');
       // Nu putem valida criptografic semnătura, dar putem refuza un fișier identic cu unul deja existent
       // (adică documentul descărcat și încărcat înapoi fără a fi semnat).
@@ -633,6 +726,8 @@ app.register(async (app) => {
         if (known.has(await fileHash(f.stored))) throw fail(400, `„${f.name}” este identic cu un fișier deja existent. Încărcați versiunea semnată de dvs.`);
       }
       tx(() => {
+        // lanțul poate fi modificat de autor cât timp fișierul se încarcă: verificăm din nou, atomic
+        if (currentSigner(id) !== req.user.id) throw fail(403, 'Ordinea semnării s-a schimbat între timp; nu mai este rândul dvs.');
         const ins = db.prepare("INSERT INTO document_files (document_id, name, stored, size, signed_by, signed_by_name, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))");
         saved.forEach((f) => ins.run(id, f.name, f.stored, f.size, req.user.id, req.user.full_name));
         const r = db.prepare("UPDATE document_signers SET signed_at = datetime('now') WHERE document_id = ? AND user_id = ? AND signed_at IS NULL").run(id, req.user.id);
@@ -647,11 +742,15 @@ app.register(async (app) => {
     return { ok: true, mail: await notifySigners(req, id, [currentSigner(id)]) };
   });
   app.post('/api/documents/:id/remind', { preHandler: requireEditor }, async (req) => {
-    const id = Number(req.params.id);
+    const id = paramId(req);
     const old = db.prepare('SELECT id, created_by FROM documents WHERE id = ?').get(id);
     if (!old || !canEdit(req.user, old)) throw fail(404, 'Documentul nu a fost găsit.');
     const turn = currentSigner(id);
     if (!turn) throw fail(400, 'Toți semnatarii au semnat deja.');
+    // cel mult o retrimitere la 5 minute pentru același document, ca semnatarul să nu fie inundat de e-mailuri
+    const last = reminded.get(id) || 0;
+    if (Date.now() - last < 5 * 60000) throw fail(429, 'Notificarea a fost retrimisă recent. Reîncercați peste câteva minute.');
+    reminded.set(id, Date.now());
     return { mail: await notifySigners(req, id, [turn]) };
   });
 
@@ -684,7 +783,7 @@ app.register(async (app) => {
   });
   app.post('/api/admin/settings/test', { preHandler: requireAdmin }, async (req) => {
     const to = str(req.body?.to, 200);
-    if (!/^[^\s@]+@[^\s@]+$/.test(to)) throw fail(400, 'Introduceți adresa de e-mail pentru test.');
+    if (!EMAIL_RE.test(to)) throw fail(400, 'Introduceți o adresă de e-mail validă pentru test.');
     if (!mail.enabled()) throw fail(400, 'Completați și salvați mai întâi serverul SMTP.');
     try {
       await mail.sendTest(to);
@@ -706,9 +805,15 @@ app.register(async (app) => {
     return reply.send(backup.createExportStream());
   });
   // Corpul cererii este chiar arhiva, citită ca flux (poate avea mulți GB).
+  let importing = false;
   app.addContentTypeParser('application/octet-stream', (req, payload, done) => done(null, payload));
   app.post('/api/admin/import', { preHandler: requireAdmin, bodyLimit: 1024 ** 4 }, async (req) => {
     if (!req.body || typeof req.body.pipe !== 'function') throw fail(400, 'Încărcați fișierul de backup.');
+    if (importing) {
+      req.body.resume();
+      throw fail(409, 'Un import este deja în curs.');
+    }
+    importing = true;
     try {
       const r = await backup.importArchive(req.body);
       audit(req, 'import complet', `${r.documents} documente, ${r.users} utilizatori, backup din ${r.created_at}`);
@@ -717,11 +822,13 @@ app.register(async (app) => {
       req.log.warn(e);
       audit(req, 'import eșuat', e.message);
       throw fail(400, e.expose ? e.message : 'Arhiva este deteriorată sau nu este un backup e-Management ANSC. Nimic nu a fost modificat.');
+    } finally {
+      importing = false;
     }
   });
 
   app.delete('/api/documents/:id', { preHandler: requireEditor }, async (req) => {
-    const id = Number(req.params.id);
+    const id = paramId(req);
     const old = db.prepare('SELECT id, title, created_by FROM documents WHERE id = ?').get(id);
     if (!old || !canEdit(req.user, old)) throw fail(404, 'Documentul nu a fost găsit sau nu îl puteți șterge.');
     const signers = db.prepare('SELECT signed_at FROM document_signers WHERE document_id = ?').all(id);
@@ -737,7 +844,7 @@ app.register(async (app) => {
     const acc = accessClause(req.user);
     const f = db
       .prepare(`SELECT f.name, f.stored, f.document_id FROM document_files f JOIN documents d ON d.id = f.document_id WHERE f.id = ? AND ${acc.sql}`)
-      .get(Number(req.params.id), ...acc.params);
+      .get(paramId(req), ...acc.params);
     const file = f && path.join(UPLOAD_DIR, f.stored);
     if (!f || !fs.existsSync(file)) throw fail(404, 'Fișierul nu a fost găsit.');
     markSeen(req.user.id, f.document_id); // deschiderea unui fișier înseamnă că documentul a fost văzut
@@ -746,15 +853,56 @@ app.register(async (app) => {
     const inline = INLINE_TYPES[path.extname(f.name).toLowerCase()];
     reply
       .type(inline || 'application/octet-stream')
-      .header('Content-Disposition', `${inline && !req.query.download ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(f.name)}`);
+      .header(
+        'Content-Disposition',
+        `${inline && !req.query.download ? 'inline' : 'attachment'}; filename="${f.name.replace(/[^\x20-\x7e]|["\\]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(f.name)}`
+      );
     return reply.send(fs.createReadStream(file));
   });
 });
 
+// ---------- întreținere la pornire ----------
+// Un import întrerupt (oprirea serverului, pana de curent) lasă în urmă un folder temporar, uneori mare.
+function cleanupLeftovers() {
+  try {
+    for (const n of fs.readdirSync(DATA_DIR)) {
+      if (/^import-/.test(n)) fs.rmSync(path.join(DATA_DIR, n), { recursive: true, force: true });
+    }
+    // Fișierele fără document (o încărcare întreruptă) nu se șterg automat, doar se semnalează.
+    const known = new Set(db.prepare('SELECT stored FROM document_files').all().map((r) => r.stored));
+    const orphans = fs.readdirSync(UPLOAD_DIR).filter((n) => !known.has(n)).length;
+    if (orphans) console.warn(`Atenție: ${orphans} fișiere din ${UPLOAD_DIR} nu aparțin niciunui document.`);
+    const missing = [...known].filter((n) => !fs.existsSync(path.join(UPLOAD_DIR, n))).length;
+    if (missing) console.warn(`Atenție: ${missing} fișiere ale documentelor lipsesc din ${UPLOAD_DIR}.`);
+  } catch (e) {
+    console.error('Verificarea folderului de date a eșuat:', e.message);
+  }
+}
+cleanupLeftovers();
+
+process.on('unhandledRejection', (e) => app.log.error(e));
+
+// Oprire curată: cererile în curs se termină, apoi baza de date este închisă (jurnalul WAL este scris în fișier).
+let stopping = false;
+function shutdown(signal) {
+  if (stopping) return;
+  stopping = true;
+  console.log(`Oprire (${signal})…`);
+  setTimeout(() => process.exit(1), 10000).unref();
+  app.close().finally(() => {
+    try {
+      db.close();
+    } catch {}
+    process.exit(0);
+  });
+}
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+
 app.listen({ port: PORT, host: HOST }).then(
   () => console.log(`e-Management ANSC rulează pe http://localhost:${PORT}`),
   (err) => {
-    console.error(err);
+    console.error(err.code === 'EADDRINUSE' ? `Portul ${PORT} este deja folosit de alt program. Setați altul prin variabila PORT.` : err);
     process.exit(1);
   }
 );

@@ -15,7 +15,7 @@ Aplicația pornește pe `http://localhost:3080`. La prima pornire se creează co
 
 ## Securitate
 
-Făcut în aplicație: parole scrypt (minimum 10 caractere), sesiuni de 12 ore în cookie `HttpOnly` + `SameSite=Strict`, verificarea originii la cererile care modifică date, antete CSP / HSTS / anti-clickjacking, blocare temporară după încercări eșuate de autentificare, jurnal de audit (pagina **Jurnal**), verificarea accesului la fiecare fișier descărcat.
+Făcut în aplicație: parole scrypt (minimum 10 caractere), sesiuni de 12 ore în cookie `HttpOnly` + `SameSite=Strict`, verificarea originii la cererile care modifică date, antete CSP / HSTS / anti-clickjacking / COOP, blocare temporară după încercări eșuate de autentificare și de schimbare a parolei, jurnal de audit (pagina **Jurnal**), verificarea accesului la fiecare fișier descărcat, refuzul încărcărilor neautorizate înainte de a scrie pe disc, limită de o retrimitere a e-mailului de semnare la 5 minute. Datele contului dispar din pagină imediat la ieșire sau la expirarea sesiunii.
 
 De asigurat la instalare:
 
@@ -33,7 +33,7 @@ Variabile de mediu opționale:
 | `PORT` | `3080` | portul serverului |
 | `HOST` | `0.0.0.0` | adresa pe care ascultă |
 | `DATA_DIR` | `./data` | baza de date (`ansc.db`) și fișierele încărcate (`uploads/`) |
-| `TRUST_PROXY` | — | setați `1` dacă aplicația stă în spatele unui proxy HTTPS (nginx, IIS) |
+| `TRUST_PROXY` | `loopback` | proxy-ul HTTPS (nginx, IIS) în care are încredere: adresa lui IP/CIDR, `1` = un singur proxy în față, `true` = oricare |
 
 Aplicația nu folosește fișier `.env`. Setările SMTP pentru e-mailurile de semnare se completează de administrator în pagina **Setări** și sunt păstrate în baza de date (`data/`), deci rămân neschimbate la actualizarea codului. Ele nu sunt incluse în exportul de backup, fiind specifice serverului.
 
@@ -51,11 +51,15 @@ Copia de rezervă se face din pagina **Backup** (admin): un singur fișier `.ans
 - **Vizibilitate**: fiecare document este vizibil tuturor angajaților sau doar subdiviziunilor și persoanelor selectate. O subdiviziune selectată include și subdiviziunile din subordinea ei. Autorul și administratorii văd documentul întotdeauna.
 - **Notificări**: fiecare utilizator are o pagină cu documentele pe care încă nu le-a văzut și cu cele care îi așteaptă semnătura.
 - **Semnare în lanț**: autorul încarcă documentul și stabilește ordinea semnatarilor. Primul îl descarcă, îl semnează digital (în afara aplicației) și încarcă versiunea semnată în aceeași înregistrare; apoi următorul descarcă acea versiune, și tot așa. Persoana aflată la rând primește un e-mail. Aplicația nu validează criptografic semnătura; refuză doar un fișier identic cu unul deja existent.
-- **Organigramă**: structură ierarhică de subdiviziuni, cu angajații fiecăreia; administratorul o editează direct din pagină.
+- **Organigramă**: vizibilă tuturor angajaților, ca schemă (arbore cu linii de legătură, ramuri care se pot restrânge, mărire și deplasare prin tragere) sau ca listă indentată. Căutarea găsește persoane după nume, funcție sau e-mail și subdiviziuni, și le evidențiază în schemă. Administratorul o editează direct din pagină.
+- **Utilizatori**: o persoană care a semnat documente nu poate fi ștearsă (semnăturile rămân în istoric), doar dezactivată; la dezactivarea unui semnatar aflat la rând, aplicația avertizează și marchează lanțul ca blocat.
 - **Roluri**: Administrator (gestionează tot), Editor (adaugă documente și le modifică pe cele proprii), Angajat (doar vizualizare).
 
 ## Structură
 
 - `src/db.js`: schema SQLite (`node:sqlite`), datele inițiale, parolele (scrypt).
 - `src/server.js`: serverul Fastify și toate rutele `/api`.
-- `public/`: interfața (Vue 3 fără pas de build, servit local, fără CDN).
+- `public/`: interfața (Vue 3 fără pas de build, servit local, fără CDN) și pictogramele (`favicon.ico`, `favicon.svg`, `apple-touch-icon.png`).
+- `scripts/make-icons.js`: regenerează pictogramele (`node scripts/make-icons.js`), fără dependențe.
+
+La pornire, serverul șterge folderele temporare rămase de la un import întrerupt și semnalează în jurnal fișierele care lipsesc sau nu aparțin niciunui document. La oprire (Ctrl+C / SIGTERM) termină cererile în curs și închide baza de date.

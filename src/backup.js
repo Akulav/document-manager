@@ -33,8 +33,8 @@ async function* archive() {
   const tables = {};
   for (const t of TABLES) tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
   const stored = tables.document_files.map((f) => f.stored);
-  const missing = stored.filter((s) => !fs.existsSync(path.join(UPLOAD_DIR, s)));
-  const json = Buffer.from(JSON.stringify({ format: 1, created_at: new Date().toISOString(), missing, tables }));
+  const missing = new Set(stored.filter((s) => !fs.existsSync(path.join(UPLOAD_DIR, s))));
+  const json = Buffer.from(JSON.stringify({ format: 1, created_at: new Date().toISOString(), missing: [...missing], tables }));
 
   yield Buffer.from(MAGIC + '\n');
   yield line({ name: 'db.json', size: json.length });
@@ -42,7 +42,7 @@ async function* archive() {
   yield line({ sha256: sha(json) });
   let count = 1;
   for (const s of stored) {
-    if (missing.includes(s)) continue;
+    if (missing.has(s)) continue;
     const file = path.join(UPLOAD_DIR, s);
     const size = fs.statSync(file).size;
     const hash = crypto.createHash('sha256');

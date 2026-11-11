@@ -118,20 +118,128 @@ label.field > span { display: block; font-size: 13px; font-weight: 600; margin-b
 .vis-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .scroll { max-height: 190px; overflow: auto; margin-top: 6px; }
 
-/* organigramă */
-.org-children { margin-left: 22px; padding-left: 18px; border-left: 2px solid var(--border); }
-.org-node { margin-top: 10px; }
-.org-card { padding: 12px 16px; }
-.org-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.org-head h3 { font-size: 16px; }
-.badge { font-size: 12px; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 1px 9px; font-weight: 600; }
+/* insigne și persoane (folosite în organigramă și în tabele) */
+.badge { font-size: 12px; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 1px 9px; font-weight: 600; white-space: nowrap; }
 .badge.gray { background: #eef0f3; color: var(--muted); }
-.org-actions { margin-left: auto; display: flex; gap: 2px; flex-wrap: wrap; }
+.badge.dark { background: var(--accent); color: #fff; }
 .people { list-style: none; margin: 8px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px; }
-.person { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: 8px; background: #f7f9fb; }
-.avatar { flex: 0 0 32px; height: 32px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
-.person div { min-width: 0; line-height: 1.3; }
-.person b { font-weight: 600; display: block; }
+.person { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: 8px; background: #f7f9fb; min-width: 0; }
+.person.hit { background: #fff4d6; box-shadow: inset 0 0 0 1px #f5c451; }
+.avatar { flex: 0 0 32px; height: 32px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 700; letter-spacing: .3px; }
+.avatar.sm { flex-basis: 28px; width: 28px; height: 28px; font-size: 11px; }
+.person-txt { flex: 1; min-width: 0; line-height: 1.3; }
+.person-txt b, .person-txt span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person-txt b { font-weight: 600; }
+.person-mail { flex: 0 0 auto; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; color: var(--muted); }
+.person-mail:hover { background: var(--accent-soft); color: var(--accent); }
+.icon { width: 16px; height: 16px; display: block; }
+.icon-btn { display: grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; padding: 0; }
+.icon-btn:hover, .icon-btn:focus-visible { background: var(--accent-soft); color: var(--accent); }
+.icon-btn.danger:hover, .icon-btn.danger:focus-visible { background: #fef3f2; color: var(--danger); }
+.icon-btn:focus-visible { outline: 2px solid #9db9dc; }
+
+/* organigramă: bara de instrumente */
+.org-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+.org-search { flex: 1 1 280px; width: auto; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg button { border: 0; background: none; font: inherit; font-size: 14px; padding: 7px 12px; cursor: pointer; color: var(--text); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button:hover:not(:disabled) { background: #f2f5f9; }
+.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.seg button:disabled { color: #b6bcc6; cursor: default; }
+.seg .zoom-val { min-width: 56px; font-variant-numeric: tabular-nums; }
+.org-results { padding: 14px 16px; margin-bottom: 14px; }
+.res-units { display: flex; flex-wrap: wrap; gap: 8px; }
+.res-unit { display: flex; flex-direction: column; align-items: flex-start; text-align: left; border: 1px solid var(--border); border-radius: 8px; background: #fafbfc; padding: 6px 12px; font: inherit; cursor: pointer; max-width: 100%; }
+.res-unit:hover { border-color: var(--accent); background: #fff; }
+.res-people { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.res-person { display: flex; flex-direction: column; align-items: stretch; background: #f7f9fb; border-radius: 8px; padding-bottom: 6px; min-width: 0; }
+.res-person > .bare { min-width: 0; }
+.res-person > .btn.link, .res-person > .muted { align-self: flex-start; margin-left: 48px; max-width: calc(100% - 56px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+ul.bare { list-style: none; margin: 0; padding: 0; }
+
+/* organigramă: schema (arbore de sus în jos) */
+.oc-scroll { --line: #b9c4d3; --oc-w: 264px; overflow: auto; padding: 24px 16px 32px; min-height: 360px; max-height: calc(100vh - 230px); cursor: grab; background: radial-gradient(circle, #dfe5ee 1px, transparent 1.2px) 0 0 / 18px 18px, #fbfcfe; }
+.oc-scroll.panning { cursor: grabbing; user-select: none; }
+.oc-canvas { width: max-content; min-width: 100%; }
+.oc-level, .oc-stack { list-style: none; margin: 0; padding: 0; }
+.oc-level { display: flex; justify-content: center; padding-top: 20px; position: relative; }
+.oc-level > li { position: relative; display: flex; flex-direction: column; align-items: center; padding: 20px 10px 0; }
+.oc-root { padding-top: 0; }
+.oc-root > li { padding-top: 0; }
+/* liniile orizontale dintre frați și coborârea spre fiecare card */
+.oc-level > li::before, .oc-level > li::after { content: ""; position: absolute; top: 0; width: 50%; height: 20px; border-top: 2px solid var(--line); }
+.oc-level > li::before { right: 50%; }
+.oc-level > li::after { left: 50%; border-left: 2px solid var(--line); margin-left: -1px; }
+.oc-level > li:first-child::before, .oc-level > li:last-child::after { border: 0 none; }
+.oc-level > li:last-child::before { border-right: 2px solid var(--line); border-radius: 0 10px 0 0; margin-right: -1px; }
+.oc-level > li:first-child::after { border-radius: 10px 0 0 0; }
+.oc-level > li:only-child::before { border-radius: 0; }
+.oc-root > li::before, .oc-root > li::after { display: none; }
+/* linia care coboară din cardul părinte */
+.oc-level .oc-level::before { content: ""; position: absolute; top: 0; left: 50%; height: 20px; border-left: 2px solid var(--line); margin-left: -1px; }
+/* subdiviziunile finale, una sub alta */
+.oc-stack { width: var(--oc-w); padding-top: 2px; }
+.oc-stack > li { position: relative; padding: 12px 0 0 30px; }
+.oc-stack > li::before { content: ""; position: absolute; left: 14px; top: 0; bottom: 0; border-left: 2px solid var(--line); }
+.oc-stack > li:last-child::before { bottom: auto; height: 36px; width: 16px; border-bottom: 2px solid var(--line); border-bottom-left-radius: 10px; }
+.oc-stack > li::after { content: ""; position: absolute; left: 14px; top: 34px; width: 16px; border-top: 2px solid var(--line); }
+.oc-stack > li:last-child::after { display: none; }
+.oc-stack .oc-card { width: 100%; }
+
+.oc-card { --c: var(--accent); position: relative; width: var(--oc-w); text-align: left; background: var(--surface); border: 1px solid var(--border); border-top: 4px solid var(--c); border-radius: 12px; padding: 10px 12px 12px; box-shadow: 0 1px 2px rgba(16,24,40,.06), 0 4px 12px rgba(16,24,40,.05); cursor: default; transition: box-shadow .15s, transform .15s; }
+.oc-card:hover { box-shadow: 0 2px 4px rgba(16,24,40,.08), 0 10px 24px rgba(16,24,40,.10); }
+.oc-card.lvl1 { --c: #2b6cb0; }
+.oc-card.lvl2 { --c: #0f766e; }
+.oc-card.lvl3 { --c: #7c8798; }
+.oc-card.lvl0 { --c: transparent; color: #fff; border: 0; background: linear-gradient(135deg, #163c6a, #1d4e89 60%, #2a6db3); box-shadow: 0 6px 20px rgba(22,60,106,.35); }
+.oc-card.lvl0 .oc-type, .oc-card.lvl0 .oc-count { color: rgba(255,255,255,.78); }
+.oc-card.lvl0 .oc-name { font-size: 16px; }
+.oc-card.lvl0 .person { background: rgba(255,255,255,.12); }
+.oc-card.lvl0 .person .muted { color: rgba(255,255,255,.75); }
+.oc-card.lvl0 .person-mail, .oc-card.lvl0 .icon-btn { color: rgba(255,255,255,.8); }
+.oc-card.lvl0 .person-mail:hover, .oc-card.lvl0 .icon-btn:hover { background: rgba(255,255,255,.18); color: #fff; }
+.oc-card.lvl0 .avatar { box-shadow: 0 0 0 2px rgba(255,255,255,.6); }
+.oc-card.lvl0 .oc-more { color: #fff; }
+.oc-card.hit { box-shadow: 0 0 0 3px #f5c451, 0 6px 18px rgba(16,24,40,.12); }
+.oc-card.focus, .ol-card.focus { animation: pulse 1.1s ease-out 2; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(29,78,137,.55); } 100% { box-shadow: 0 0 0 14px rgba(29,78,137,0); } }
+.oc-top { display: flex; align-items: center; gap: 6px; min-height: 26px; }
+.oc-type { flex: 1; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--c); }
+.oc-card.lvl3 .oc-type { color: var(--muted); }
+.oc-top .org-admin { opacity: 0; transition: opacity .12s; }
+.oc-card:hover .org-admin, .oc-card:focus-within .org-admin { opacity: 1; }
+.oc-name { font-weight: 700; font-size: 14.5px; line-height: 1.3; overflow-wrap: anywhere; }
+.oc-count { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.oc-people { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.oc-people .person { padding: 4px 6px; gap: 8px; }
+.oc-people .avatar { flex-basis: 28px; height: 28px; font-size: 11px; }
+.oc-people .person-txt { font-size: 13.5px; }
+.oc-people .person-txt .small { font-size: 12px; }
+.oc-more { border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--accent); cursor: pointer; padding: 4px 6px 0; font-weight: 600; }
+.oc-more:hover { text-decoration: underline; }
+.oc-toggle { position: absolute; left: 50%; bottom: -12px; transform: translateX(-50%); z-index: 2; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; border: 2px solid var(--line); background: #fff; color: var(--muted); font: 700 12px/18px "Segoe UI", system-ui, sans-serif; cursor: pointer; }
+.oc-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.oc-toggle.closed { background: var(--accent); border-color: var(--accent); color: #fff; }
+.org-admin { display: flex; gap: 1px; }
+
+/* organigramă: lista indentată */
+.ol-tree { display: grid; gap: 0; }
+.ol-node { margin-top: 10px; }
+.ol-children { margin-left: 22px; padding-left: 18px; border-left: 2px solid var(--border); }
+.ol-card { --c: var(--accent); padding: 12px 16px; border-left: 4px solid var(--c); }
+.ol-card.lvl1 { --c: #2b6cb0; }
+.ol-card.lvl2 { --c: #0f766e; }
+.ol-card.lvl3 { --c: #98a2b3; }
+.ol-card.hit { box-shadow: 0 0 0 2px #f5c451; }
+.ol-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ol-head h3 { font-size: 16px; }
+.ol-admin { margin-left: auto; }
+.ol-caret { border: 0; background: none; cursor: pointer; width: 22px; height: 22px; border-radius: 6px; color: var(--muted); font-size: 14px; padding: 0; transition: transform .15s; }
+.ol-caret:hover { background: var(--accent-soft); color: var(--accent); }
+.ol-caret.closed { transform: rotate(-90deg); }
+.ol-caret-space { width: 22px; }
+.unassigned { margin-top: 24px; border-left-color: #98a2b3; }
 
 /* tabele */
 table { width: 100%; border-collapse: collapse; }
@@ -244,4 +352,69 @@ tbody tr:hover td { background: #fafbfd; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
 .toast { transform: none; left: 0; right: 0; margin: 0 auto; width: fit-content; max-width: min(92vw, 640px); }
-@media (prefers-reduced-motion: reduce) { .overlay, .modal, .toast { animation: none; } .btn, .doc, input { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .overlay, .modal, .toast, .oc-card.focus, .ol-card.focus { animation: none; } .btn, .doc, input, .oc-card { transition: none; } }
+
+/* ---------- elemente comune ---------- */
+.brand-logo { width: 30px; height: 30px; border-radius: 8px; display: block; box-shadow: 0 0 0 1.5px rgba(255,255,255,.55); }
+.brand .brand-mark { font-size: 13px; padding: 1px 7px; margin-left: 2px; vertical-align: 1px; }
+.login .brand-logo { box-shadow: none; }
+.login-sub { margin: 0 0 16px; }
+.login-alt { margin-top: 8px; color: var(--muted); }
+.btn.block { width: 100%; justify-content: center; }
+.btn.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.danger-solid:hover { background: #912018; }
+.btn.danger:hover:not(:disabled) { background: #fef3f2; border-color: #fecdca; }
+.btn:focus-visible { outline: 2px solid #9db9dc; outline-offset: 2px; }
+.warn { color: #b54708; font-weight: 600; }
+.dialog-msg { margin: 0 0 4px; white-space: pre-line; }
+.page-sub { margin: 4px 0 0; }
+.head-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.search-sm { max-width: 340px; }
+.head-actions .search-sm { width: 300px; }
+.table-wrap { overflow: auto; }
+.who { display: inline-flex; align-items: center; gap: 10px; }
+.uname { font: 13px/1.4 Consolas, "Cascadia Mono", monospace; background: #f2f4f7; border-radius: 5px; padding: 1px 6px; }
+.status { font-size: 13px; color: var(--muted); }
+.status.on::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #12b76a; margin-right: 6px; vertical-align: 1px; }
+.row-actions { white-space: nowrap; text-align: right; }
+.empty-row { text-align: center; color: var(--muted); padding: 30px 14px; }
+.nowrap { white-space: nowrap; }
+.settings { padding: 20px; max-width: 760px; }
+.settings-sub { margin: 4px 0 14px; }
+.settings-sub.tight { margin-bottom: 10px; }
+.grow2 { flex: 2 !important; }
+.pull-up { margin: -6px 0 10px; }
+.addrow.narrow { max-width: 480px; }
+.hint { margin: 8px 0 0; }
+.section-title.spaced { margin-top: 18px; }
+.scroll.short { max-height: 130px; }
+.mt4 { margin-top: 4px; } .mt6 { margin-top: 6px; } .mt10 { margin-top: 10px; } .mt24 { margin-top: 24px; } .mb0 { margin-bottom: 0; }
+label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-size: inherit; font-weight: 400; margin: 0; }
+.input-btn .btn { flex: 0 0 auto; }
+.toast { cursor: pointer; }
+.boot { min-height: 100vh; display: grid; place-content: center; grid-auto-flow: column; gap: 10px; align-items: center; color: var(--muted); }
+.spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid #c9d3e0; border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.btn:disabled, .btn:disabled:hover { cursor: not-allowed; }
+
+/* meniul administratorului are multe intrări: pe ecrane medii devine mai compact, ca să rămână pe un rând */
+@media (max-width: 1240px) and (min-width: 861px) {
+  .topbar-in { gap: 14px; }
+  .nav { gap: 0; flex-wrap: nowrap; }
+  .nav a { padding: 6px 8px; font-size: 13.5px; }
+  .nav a.sep { margin-left: 8px; }
+  .userbox .name { display: none; }
+  .brand > span { display: none; }
+}
+@media (max-width: 860px) {
+  .oc-scroll { max-height: none; }
+  .head-actions, .head-actions .search-sm { width: 100%; max-width: none; }
+  .ol-children { margin-left: 8px; padding-left: 12px; }
+  .org-toolbar .seg { flex: 1 1 auto; }
+  .org-toolbar .seg button { flex: 1; }
+}
+@media print {
+  .topbar, .org-toolbar, .org-admin, .oc-toggle, .page-head .btn { display: none !important; }
+  .oc-scroll { max-height: none; overflow: visible; background: none; border: 0; }
+  body { background: #fff; }
+}
