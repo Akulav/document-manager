@@ -157,6 +157,6 @@ că pagina, scripturile și API-ul răspund.
 
 **Made with ❤️ by [Akulav](https://github.com/Akulav)**
 
-<sub>© 2026 Akulav. Toate drepturile rezervate.</sub>
+<sub>© 2026 Akulav. Source-available sub <a href="LICENSE">Akulav Source-Available License</a>.</sub>
 
 </div>

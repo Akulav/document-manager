@@ -2,6 +2,7 @@
   "name": "ansc-emanagement",
   "version": "1.0.0",
   "description": "Sistem intern de management al documentelor pentru ANSC",
+  "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "main": "src/server.js",
   "scripts": {
