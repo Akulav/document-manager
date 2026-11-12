@@ -7,6 +7,9 @@ const Fastify = require('fastify');
 const { db, tx, hashPassword, checkPassword, UPLOAD_DIR, DATA_DIR, INITIAL_PASSWORD_FILE } = require('./db');
 const mail = require('./mail');
 const backup = require('./backup');
+const assets = require('./assets');
+const update = require('./update');
+const { NAME, VERSION } = require('./install');
 
 const PORT = Number(process.env.PORT) || 3080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -390,7 +393,16 @@ const INLINE_TYPES = { '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': '
 // ---------- pluginuri ----------
 app.register(require('@fastify/cookie'));
 app.register(require('@fastify/multipart'), { limits: { fileSize: MAX_FILE, files: 10, fields: 5, fieldSize: 200000 } });
-app.register(require('@fastify/static'), { root: path.join(__dirname, '..', 'public') });
+// Interfața (public/ și Vue): din programul publicat sau de pe disc, vezi src/assets.js.
+for (const url of Object.keys(assets.FILES)) {
+  app.get(url, (req, reply) => {
+    const f = assets.get(url);
+    // Vue se schimbă doar odată cu versiunea aplicației; restul se reverifică la fiecare încărcare (ETag).
+    reply.type(f.type).header('ETag', f.etag).header('Cache-Control', url === '/vendor/vue.js' ? 'public, max-age=86400' : 'no-cache');
+    if (req.headers['if-none-match'] === f.etag) return reply.code(304).send();
+    return reply.send(f.body);
+  });
+}
 
 // Apărare suplimentară împotriva CSRF (pe lângă cookie-ul SameSite=Strict): cererile care modifică
 // date trebuie să vină de pe aceeași origine. Un alt site, chiar de pe un subdomeniu vecin, este refuzat.
@@ -434,9 +446,7 @@ app.setNotFoundHandler((req, reply) => reply.code(404).send({ error: 'Pagina sau
 
 // ---------- rute ----------
 app.register(async (app) => {
-  // Vue este servit local (fără CDN), ca aplicația să funcționeze și într-o rețea internă.
-  const vueFile = fs.readFileSync(require.resolve('vue/dist/vue.esm-browser.prod.js'));
-  app.get('/vendor/vue.js', (req, reply) => reply.type('text/javascript; charset=utf-8').header('Cache-Control', 'public, max-age=86400').send(vueFile));
+  // (Vue este servit local, fără CDN, ca aplicația să funcționeze și într-o rețea internă: /vendor/vue.js, mai sus.)
 
   // --- sesiune ---
   app.post('/api/login', async (req, reply) => {
@@ -814,6 +824,38 @@ app.register(async (app) => {
     return { deleted: Number(r.changes) };
   });
 
+  // --- actualizări (admin): versiunile publicate pe GitHub, verificate cu SHA-256 ---
+  app.get('/api/admin/update', { preHandler: requireAdmin }, async () => update.publicState());
+  app.post('/api/admin/update/check', { preHandler: requireAdmin }, async () => {
+    await update.check();
+    return update.publicState();
+  });
+  app.post('/api/admin/update/apply', { preHandler: requireAdmin }, async (req) => {
+    if (!update.state.canApply) throw fail(400, 'Rulează din surse (npm start): actualizați codul cu git, nu din aplicație.');
+    if (!update.state.available) throw fail(400, 'Nu există o versiune mai nouă.');
+    if (update.state.busy) throw fail(409, 'O actualizare este deja în curs.');
+    update.state.busy = true;
+    let file;
+    try {
+      file = await update.download(DATA_DIR);
+    } catch (e) {
+      throw fail(400, e.message);
+    } finally {
+      update.state.busy = false;
+    }
+    const version = update.state.latest;
+    audit(req, 'actualizare', `${update.state.current} → ${version}`);
+    // răspunsul pleacă înainte ca serverul să se oprească; noua versiune pornește singură
+    setTimeout(() => {
+      try {
+        update.apply(file, shutdown);
+      } catch (e) {
+        app.log.error(e);
+      }
+    }, 500);
+    return { ok: true, version };
+  });
+
   // --- copie de rezervă completă (admin) ---
   app.get('/api/admin/export', { preHandler: requireAdmin }, async (req, reply) => {
     const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
@@ -928,10 +970,18 @@ function shutdown(signal) {
 process.once('SIGINT', () => shutdown('SIGINT'));
 process.once('SIGTERM', () => shutdown('SIGTERM'));
 
-app.listen({ port: PORT, host: HOST }).then(
-  () => console.log(`e-Management ANSC rulează pe http://localhost:${PORT}`),
-  (err) => {
+// Pornit de src/main.js (sau direct, `node src/server.js`).
+async function start() {
+  await app.listen({ port: PORT, host: HOST });
+  console.log(`${NAME} ${VERSION} rulează pe http://localhost:${PORT}`);
+  update.schedule();
+}
+
+module.exports = { start, shutdown, PORT, HOST };
+
+if (require.main === module) {
+  start().catch((err) => {
     console.error(err.code === 'EADDRINUSE' ? `Portul ${PORT} este deja folosit de alt program. Setați altul prin variabila PORT.` : err);
     process.exit(1);
-  }
-);
+  });
+}

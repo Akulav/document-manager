@@ -847,8 +847,65 @@ const InboxView = {
     <DocForm v-if="editing !== undefined" :doc="editing" @close="editing = undefined" @saved="editing = undefined" />`,
 };
 
+// ---------- actualizări ----------
+const UpdateView = {
+  data: () => ({ s: null, busy: false, restarting: false }),
+  async mounted() {
+    await run(async () => (this.s = await api('/api/admin/update')));
+  },
+  methods: {
+    fmtDateTime,
+    async check() {
+      this.busy = true;
+      await run(async () => (this.s = await api('/api/admin/update/check', { method: 'POST' })));
+      this.busy = false;
+    },
+    async apply() {
+      const ok = await ask({
+        title: 'Actualizați la ' + this.s.latest + '?',
+        message: 'Serverul descarcă noua versiune, o verifică (SHA-256) și repornește. Aplicația nu va răspunde câteva secunde pentru toți utilizatorii. Datele rămân neschimbate.',
+        okLabel: 'Actualizează acum',
+      });
+      if (!ok) return;
+      this.busy = true;
+      if (!(await run(() => api('/api/admin/update/apply', { method: 'POST' })))) return (this.busy = false);
+      this.restarting = true;
+      // se așteaptă repornirea serverului, apoi pagina se reîncarcă
+      for (let i = 0; i < 120; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          const r = await fetch('/api/admin/update', { credentials: 'same-origin' });
+          if (r.ok && (await r.json()).current === this.s.latest) return location.reload();
+        } catch {}
+      }
+      this.restarting = false;
+      this.busy = false;
+      toast('Serverul nu a repornit încă. Verificați-l și reîncărcați pagina.', true);
+    },
+  },
+  template: /*html*/ `
+    <section v-if="s" class="card panel">
+      <div class="panel-head">
+        <h2>Actualizări</h2>
+        <span class="pill" :class="s.available ? 'green' : 'gray'">{{ s.available ? 'Disponibilă ' + s.latest : 'Versiunea ' + s.current }}</span>
+      </div>
+      <p class="muted small">
+        Versiunile noi sunt publicate pe GitHub și verificate cu SHA-256 înainte de instalare, în același folder; datele rămân neschimbate.
+        <template v-if="s.checkedAt"> Ultima verificare: {{ fmtDateTime(s.checkedAt) }}.</template>
+      </p>
+      <p v-if="s.error" class="muted small">{{ s.error }}</p>
+      <p v-if="s.available && !s.canApply" class="muted small">Aplicația rulează din surse: actualizați codul cu git.</p>
+      <div class="panel-foot">
+        <button v-if="s.available && s.canApply" class="btn primary" :disabled="busy" @click="apply">{{ restarting ? 'Se repornește…' : busy ? 'Se descarcă…' : 'Actualizează la ' + s.latest }}</button>
+        <button class="btn" :disabled="busy" @click="check">Verifică acum</button>
+        <a v-if="s.page" class="muted small" :href="s.page" target="_blank" rel="noopener">Ce este nou</a>
+      </div>
+    </section>`,
+};
+
 // ---------- copie de rezervă ----------
 const BackupView = {
+  components: { UpdateView },
   data: () => ({ busy: false, file: null }),
   methods: {
     fmtSize,
@@ -883,6 +940,7 @@ const BackupView = {
   // Afișat în pagina „Setări”, în coloana din dreapta.
   template: /*html*/ `
     <div class="settings-col">
+      <UpdateView />
       <section class="card panel">
         <div class="panel-head"><h2>Export complet</h2><span class="pill">Backup</span></div>
         <p class="muted small">Un singur fișier comprimat cu tot: utilizatori (parole criptate), organigramă, categorii, documente, semnături și fișiere. Fiecare element are sumă de control.</p>

@@ -3,6 +3,7 @@
 //   public/favicon.svg         – pentru browserele moderne
 //   public/favicon.ico         – 16, 32, 48 și 256 px (browsere vechi, Windows, scurtături)
 //   public/apple-touch-icon.png – 180 px (ecranul principal pe telefoane/tablete)
+//   assets/icon.png, assets/icon.ico – programul (executabil, setup, scurtături, README)
 // Rulare: node scripts/make-icons.js
 const fs = require('node:fs');
 const path = require('node:path');
@@ -145,3 +146,11 @@ fs.writeFileSync(path.join(OUT, 'favicon.svg'), svg);
 fs.writeFileSync(path.join(OUT, 'favicon.ico'), ico([16, 32, 48, 256]));
 fs.writeFileSync(path.join(OUT, 'apple-touch-icon.png'), png(180));
 console.log('Pictogramele au fost generate în', OUT);
+
+// Pictogramele programului: assets/icon.png (README, meniul Linux, aplicația macOS) și assets/icon.ico
+// (executabilul și setup-ul Windows, scurtăturile).
+const ASSETS = path.join(__dirname, '..', 'assets');
+fs.mkdirSync(ASSETS, { recursive: true });
+fs.writeFileSync(path.join(ASSETS, 'icon.png'), png(256));
+fs.writeFileSync(path.join(ASSETS, 'icon.ico'), ico([16, 24, 32, 48, 64, 128, 256]));
+console.log('Pictogramele programului au fost generate în', ASSETS);
