@@ -3,6 +3,7 @@
 //   public/favicon.svg         – pentru browserele moderne
 //   public/favicon.ico         – 16, 32, 48 și 256 px (browsere vechi, Windows, scurtături)
 //   public/apple-touch-icon.png – 180 px (ecranul principal pe telefoane/tablete)
+//   public/icon-512.png         – 512 px (instalarea aplicației; listată în public/manifest.webmanifest)
 //   assets/icon.png            – 256 px (README)
 // Rulare: node scripts/make-icons.js
 const fs = require('node:fs');
@@ -94,8 +95,29 @@ function chunk(type, data) {
   crc.writeUInt32BE(crc32(body));
   return Buffer.concat([len, body, crc]);
 }
-function png(size) {
-  const px = render(size);
+// Desenul de `inner` px centrat pe un pătrat de `size` px cu fundalul paginii (pictogramele de pe ecranul
+// principal și de instalare; „maskable”: desenul rămâne în cele ~80 % din mijloc, ca la AkulavBox).
+const PAGE_BG = [0xf3, 0xf5, 0xf8];
+function tilePixels(size, inner) {
+  const art = render(inner);
+  const px = Buffer.alloc(size * size * 4);
+  const off = Math.floor((size - inner) / 2);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const o = (y * size + x) * 4;
+      const ax = x - off, ay = y - off;
+      const a = ax >= 0 && ay >= 0 && ax < inner && ay < inner ? art[(ay * inner + ax) * 4 + 3] / 255 : 0;
+      for (let i = 0; i < 3; i++) {
+        const c = a ? art[(ay * inner + ax) * 4 + i] : 0;
+        px[o + i] = Math.round(c * a + PAGE_BG[i] * (1 - a));
+      }
+      px[o + 3] = 255;
+    }
+  }
+  return px;
+}
+function png(size, pixels = render(size)) {
+  const px = pixels;
   const raw = Buffer.alloc(size * (size * 4 + 1));
   for (let y = 0; y < size; y++) px.copy(raw, y * (size * 4 + 1) + 1, y * size * 4, (y + 1) * size * 4);
   const ihdr = Buffer.alloc(13);
@@ -112,7 +134,7 @@ function png(size) {
 }
 // Fișier ICO cu imagini PNG în interior (acceptat de Windows Vista+ și de toate browserele actuale).
 function ico(sizes) {
-  const images = sizes.map(png);
+  const images = sizes.map((s) => png(s));
   const head = Buffer.alloc(6 + 16 * sizes.length);
   head.writeUInt16LE(0, 0);
   head.writeUInt16LE(1, 2);
@@ -144,7 +166,8 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 
 fs.writeFileSync(path.join(OUT, 'favicon.svg'), svg);
 fs.writeFileSync(path.join(OUT, 'favicon.ico'), ico([16, 32, 48, 256]));
-fs.writeFileSync(path.join(OUT, 'apple-touch-icon.png'), png(180));
+fs.writeFileSync(path.join(OUT, 'apple-touch-icon.png'), png(180, tilePixels(180, 150)));
+fs.writeFileSync(path.join(OUT, 'icon-512.png'), png(512, tilePixels(512, 400)));
 console.log('Pictogramele au fost generate în', OUT);
 
 // Pictograma din README (256 px).

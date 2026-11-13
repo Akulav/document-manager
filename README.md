@@ -139,8 +139,8 @@ De asigurat la instalare:
 - `src/server.js`: serverul Fastify și toate rutele `/api`.
 - `src/backup.js`: exportul și importul complet.
 - `src/mail.js`: e-mailurile de semnare (nodemailer).
-- `public/`: interfața (Vue 3 fără pas de build, servit local, fără CDN) și pictogramele (`favicon.ico`,
-  `favicon.svg`, `apple-touch-icon.png`).
+- `public/`: interfața (Vue 3 fără pas de build, servit local, fără CDN) și pictogramele (`favicon.svg`,
+  `favicon.ico`, `apple-touch-icon.png`, `icon-512.png`, listate în `manifest.webmanifest`).
 - `scripts/make-icons.js`: regenerează pictogramele (`node scripts/make-icons.js`), fără dependențe.
 
 ### Verificări automate

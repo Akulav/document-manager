@@ -1,0 +1,15 @@
+{
+  "name": "e-Management ANSC",
+  "short_name": "e-Management",
+  "description": "Sistem intern de management al documentelor. Made by Akulav.",
+  "lang": "ro",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f5f8",
+  "theme_color": "#1d4e89",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
