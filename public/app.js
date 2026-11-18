@@ -1226,14 +1226,19 @@ function parseCsv(text, sep) {
 function headerColumns(head) {
   const keys = head.map((h) => fold(h).replace(/[^a-z]+/g, ' ').trim());
   const find = (test) => keys.findIndex(test);
+  // Se recunoaște și exportul de utilizatori din Microsoft 365 / Entra (First name, Last name,
+  // User principal name, Job title, Department).
+  const mail = find((k) => k.startsWith('e mail') || k.startsWith('email') || k === 'mail');
   const c = {
-    nume: find((k) => ['nume', 'numele', 'nume de familie', 'familia'].includes(k)),
-    prenume: find((k) => ['prenume', 'prenumele'].includes(k)),
+    nume: find((k) => ['nume', 'numele', 'nume de familie', 'familia', 'last name', 'surname'].includes(k)),
+    prenume: find((k) => ['prenume', 'prenumele', 'first name', 'given name', 'givenname'].includes(k)),
     both: find((k) => /^numele? (si )?prenumele?$/.test(k) || k === 'nume si prenume'),
-    functia: find((k) => k.startsWith('functi')),
-    email: find((k) => k.startsWith('e mail') || k.startsWith('email')),
+    functia: find((k) => k.startsWith('functi') || k === 'job title' || k === 'title'),
+    email: mail >= 0 ? mail : find((k) => k === 'user principal name' || k === 'userprincipalname'),
     user: find((k) => ['utilizator', 'nume de utilizator', 'username', 'login'].includes(k)),
-    unit: find((k) => k.startsWith('subdiviziun') || k.startsWith('unitate')),
+    unit: find((k) => k.startsWith('subdiviziun') || k.startsWith('unitate') || k === 'department'),
+    // conturile șterse din Microsoft 365 au completată data ștergerii: nu le importăm
+    deleted: find((k) => k.startsWith('soft deletion')),
   };
   if (c.nume >= 0 && c.prenume >= 0) c.both = -1;
   else if (c.both < 0) return null;
@@ -1268,7 +1273,13 @@ function peopleFromCsv(text) {
   }
   const { cols: c, lines } = found;
   const at = (r, i) => (i >= 0 ? String(r[i] ?? '').trim() : '');
-  return lines
+  const active = lines.filter((r) => !at(r, c.deleted));
+  if (lines.length && !active.length) {
+    throw new Error(
+      'Toate conturile din fișier sunt marcate ca șterse („Soft deletion time stamp” completat): acesta pare exportul de utilizatori șterși din Microsoft 365. Exportați lista utilizatorilor activi.'
+    );
+  }
+  return active
     .map((r) => {
       let nume = at(r, c.nume);
       let prenume = at(r, c.prenume);
