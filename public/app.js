@@ -1179,15 +1179,28 @@ const UserForm = {
 
 // ---------- import în masă al angajaților (CSV) ----------
 // Coloane recunoscute (antet, fără diacritice/majuscule): Nume, Prenume, Funcția, E-mail,
-// Utilizator, Subdiviziune. „Subdiviziune” este calea în organigramă, de sus în jos, cu „>”
-// între niveluri (ex. „Direcția generală X > Direcția Y”). Lipsa coloanei „Utilizator” =
-// prenume.nume fără diacritice. Separatorul (; sau ,) se detectează din antet.
-const fold = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+// Utilizator, Subdiviziune. În locul coloanelor Nume + Prenume se acceptă și una singură,
+// „Numele, prenumele” / „Nume și prenume” (ca în lista de telefoane: întâi numele de familie).
+// „Subdiviziune” este calea în organigramă, de sus în jos, cu „>” între niveluri. Lipsa coloanei
+// „Utilizator” = prenume.nume fără diacritice. Fișierul poate veni din Excel așa cum l-a salvat:
+// UTF-8 sau ANSI (Windows-1250) sau UTF-16, cu separator ; , sau tab, cu rândul „sep=;” și cu
+// un titlu deasupra antetului.
+const fold = (s) => String(s ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
 const slugName = (s) => fold(s).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-function parseCsv(text) {
-  text = text.replace(/^﻿/, '');
-  const firstLine = text.split(/\r?\n/, 1)[0];
-  const sep = (firstLine.match(/;/g) || []).length >= (firstLine.match(/,/g) || []).length ? ';' : ',';
+const BOM = String.fromCharCode(0xfeff);
+
+async function readTextFile(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  if (buf[0] === 0xff && buf[1] === 0xfe) return new TextDecoder('utf-16le').decode(buf);
+  if (buf[0] === 0xfe && buf[1] === 0xff) return new TextDecoder('utf-16be').decode(buf);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf);
+  } catch {
+    return new TextDecoder('windows-1250').decode(buf); // „CSV” salvat de Excel în românește
+  }
+}
+
+function parseCsv(text, sep) {
   const rows = [];
   let row = [];
   let cell = '';
@@ -1208,31 +1221,72 @@ function parseCsv(text) {
   if (cell || row.length) row.push(cell), rows.push(row);
   return rows.filter((r) => r.some((c) => c.trim()));
 }
-function peopleFromCsv(text) {
-  const [head, ...lines] = parseCsv(text);
-  if (!head) throw new Error('Fișierul este gol.');
-  const col = (...names) => head.findIndex((h) => names.includes(fold(h)));
+
+// Pozițiile coloanelor dintr-un rând de antet, sau null dacă rândul nu este antetul.
+function headerColumns(head) {
+  const keys = head.map((h) => fold(h).replace(/[^a-z]+/g, ' ').trim());
+  const find = (test) => keys.findIndex(test);
   const c = {
-    nume: col('nume'),
-    prenume: col('prenume'),
-    functia: col('functia', 'functie', 'funcția'),
-    email: col('e-mail', 'email'),
-    user: col('utilizator', 'nume de utilizator', 'username'),
-    unit: col('subdiviziune', 'subdiviziunea'),
+    nume: find((k) => ['nume', 'numele', 'nume de familie', 'familia'].includes(k)),
+    prenume: find((k) => ['prenume', 'prenumele'].includes(k)),
+    both: find((k) => /^numele? (si )?prenumele?$/.test(k) || k === 'nume si prenume'),
+    functia: find((k) => k.startsWith('functi')),
+    email: find((k) => k.startsWith('e mail') || k.startsWith('email')),
+    user: find((k) => ['utilizator', 'nume de utilizator', 'username', 'login'].includes(k)),
+    unit: find((k) => k.startsWith('subdiviziun') || k.startsWith('unitate')),
   };
-  if (c.nume < 0 || c.prenume < 0) throw new Error('Antetul trebuie să conțină cel puțin coloanele „Nume” și „Prenume”.');
+  if (c.nume >= 0 && c.prenume >= 0) c.both = -1;
+  else if (c.both < 0) return null;
+  return c;
+}
+
+function peopleFromCsv(text) {
+  text = text.replace(BOM, '');
+  let seps = [';', ',', '\t'];
+  const sepLine = /^"?sep=(.)"?\r?\n/i.exec(text); // Excel scrie uneori „sep=;” pe primul rând
+  if (sepLine) {
+    seps = [sepLine[1]];
+    text = text.slice(sepLine[0].length);
+  }
+  let found = null;
+  for (const sep of seps) {
+    const rows = parseCsv(text, sep);
+    // antetul poate fi precedat de un titlu: îl căutăm în primele rânduri
+    for (let i = 0; i < Math.min(rows.length, 10) && !found; i++) {
+      const cols = headerColumns(rows[i]);
+      if (cols) found = { cols, lines: rows.slice(i + 1) };
+    }
+    if (found) break;
+  }
+  if (!found) {
+    const first = text.split(/\r?\n/, 1)[0].slice(0, 120);
+    throw new Error(
+      'Nu am găsit coloanele „Nume” și „Prenume” (sau „Numele, prenumele”). Primul rând din fișier este: „' +
+        first +
+        '”. Salvați tabelul ca CSV (UTF-8 sau „CSV separat prin virgulă”) cu antetul: Nume; Prenume; Funcția; E-mail; Utilizator; Subdiviziune.'
+    );
+  }
+  const { cols: c, lines } = found;
   const at = (r, i) => (i >= 0 ? String(r[i] ?? '').trim() : '');
-  return lines.map((r) => {
-    const nume = at(r, c.nume);
-    const prenume = at(r, c.prenume);
-    return {
-      full_name: [prenume, nume].filter(Boolean).join(' '),
-      username: at(r, c.user) || [slugName(prenume), slugName(nume)].filter(Boolean).join('.'),
-      email: at(r, c.email),
-      position: at(r, c.functia),
-      path: at(r, c.unit).split(/\s*[>›]\s*/).filter(Boolean),
-    };
-  });
+  return lines
+    .map((r) => {
+      let nume = at(r, c.nume);
+      let prenume = at(r, c.prenume);
+      if (c.both >= 0) {
+        // „Munteanu Angela”: ultimul cuvânt este prenumele, restul numele de familie
+        const words = at(r, c.both).split(/\s+/).filter(Boolean);
+        prenume = words.length > 1 ? words.pop() : '';
+        nume = words.join(' ');
+      }
+      return {
+        full_name: [prenume, nume].filter(Boolean).join(' '),
+        username: at(r, c.user) || [slugName(prenume), slugName(nume)].filter(Boolean).join('.'),
+        email: at(r, c.email),
+        position: at(r, c.functia),
+        path: at(r, c.unit).split(/\s*[>›]\s*/).filter(Boolean),
+      };
+    })
+    .filter((p) => p.full_name);
 }
 
 const ImportPeople = {
@@ -1260,7 +1314,7 @@ const ImportPeople = {
       this.preview = null;
       this.fileName = file.name;
       try {
-        this.rows = peopleFromCsv(await file.text());
+        this.rows = peopleFromCsv(await readTextFile(file));
         if (!this.rows.length) throw new Error('Fișierul nu conține angajați.');
         await this.check();
       } catch (err) {
@@ -1299,7 +1353,7 @@ const ImportPeople = {
       const q = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
       const lines = [['Nume și prenume', 'Utilizator', 'Parolă temporară', 'E-mail', 'Subdiviziune'].map(q).join(';')];
       for (const c of this.result.created) lines.push([c.full_name, c.username, c.password, c.email, c.unit].map(q).join(';'));
-      const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const blob = new Blob([BOM + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = 'parole-temporare.csv';
@@ -1312,7 +1366,7 @@ const ImportPeople = {
       <template v-if="!result">
         <p class="dialog-msg">Coloane: <b>Nume</b>, <b>Prenume</b>, Funcția, E-mail, Utilizator, Subdiviziune (calea în organigramă, cu „&gt;” între niveluri). Subdiviziunile lipsă se creează; conturile existente nu se modifică. Fiecare cont nou primește o parolă temporară, de schimbat la prima autentificare.</p>
         <div class="row">
-          <label class="field"><span>Fișierul CSV</span><input type="file" accept=".csv,text/csv" @change="pick" /></label>
+          <label class="field"><span>Fișierul CSV</span><input type="file" accept=".csv,.txt,text/csv,text/plain" @change="pick" /></label>
           <label class="field"><span>Plasează subdiviziunile noi de nivel superior sub</span>
             <select v-model="parentId" @change="rows.length && check()">
               <option :value="null">— nivelul superior —</option>

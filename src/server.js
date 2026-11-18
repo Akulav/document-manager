@@ -592,7 +592,7 @@ app.register(async (app) => {
     if (rootId !== null && !unitMap().has(rootId)) throw fail(400, 'Subdiviziunea superioară nu există.');
     const dryRun = body.dry_run === true;
 
-    const norm = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const norm = (s) => String(s).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
     const typeOf = (name) => {
       const n = norm(name);
       if (n.startsWith('conducere')) return 'Conducere';
