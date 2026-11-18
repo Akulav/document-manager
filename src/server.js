@@ -7,6 +7,7 @@ const Fastify = require('fastify');
 const { db, tx, hashPassword, checkPassword, UPLOAD_DIR, DATA_DIR, INITIAL_PASSWORD_FILE } = require('./db');
 const mail = require('./mail');
 const backup = require('./backup');
+const pdfsig = require('./pdfsig');
 
 const PORT = Number(process.env.PORT) || 3080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -94,10 +95,16 @@ function recordFail(key, max) {
   loginFails.set(key, f);
 }
 const reminded = new Map(); // document -> momentul ultimei retrimiteri a e-mailului de semnare
+// Jetoane de semnare pentru puntea FleetView (browser → tava FleetView → MoldSign).
+// Browserul obține un jeton după autentificare și îl trimite tăvii; tava îl validează
+// apelând înapoi /api/sign/validate. Jetonul este legat de utilizator și expiră repede.
+const signTokens = new Map(); // sha(token) -> { userId, exp }
+const SIGN_TOKEN_MS = 15 * 60000; // acoperă o sesiune de semnare (PIN + așteptare ~5 min)
 setInterval(() => {
   const now = Date.now();
   for (const [k, f] of loginFails) if (f.until < now && f.last < now - 30 * 60000) loginFails.delete(k);
   for (const [k, t] of reminded) if (t < now - 10 * 60000) reminded.delete(k);
+  for (const [k, t] of signTokens) if (t.exp < now) signTokens.delete(k);
 }, 5 * 60000).unref();
 // Verificată când utilizatorul nu există, ca timpul de răspuns să nu trădeze ce conturi sunt reale.
 const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
@@ -137,6 +144,17 @@ async function requireAdmin(req) {
 async function requireEditor(req) {
   await requireUser(req);
   if (req.user.role === 'user') throw fail(403, 'Nu aveți dreptul de a adăuga documente.');
+}
+
+// Autentifică apelul venit de la puntea FleetView: jetonul de semnare (trimis în corp)
+// ține loc de sesiune, deoarece tava nu are cookie-ul utilizatorului. Nu atinge req.user.
+async function requireSignToken(req) {
+  const token = typeof req.body?.token === 'string' ? req.body.token : '';
+  const rec = token ? signTokens.get(sha(token)) : null;
+  if (!rec || rec.exp < Date.now()) throw fail(401, 'Jeton de semnare invalid sau expirat.');
+  const u = db.prepare('SELECT id, username, full_name, active FROM users WHERE id = ?').get(rec.userId);
+  if (!u || !u.active) throw fail(401, 'Jeton de semnare invalid sau expirat.');
+  req.signUser = u;
 }
 
 function activeAdminsExcept(id) {
@@ -386,6 +404,7 @@ function accessibleDoc(user, id) {
 }
 
 const INLINE_TYPES = { '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
+const isPdf = (name) => path.extname(name).toLowerCase() === '.pdf';
 
 // ---------- pluginuri ----------
 app.register(require('@fastify/cookie'));
@@ -406,7 +425,11 @@ app.addHook('onRequest', async (req) => {
 });
 
 // Vue compilează șabloanele în browser, de aceea este nevoie de 'unsafe-eval'; restul este blocat.
-const CSP = "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+// connect-src permite, în plus, doar puntea locală FleetView (tava), prin care se face semnarea
+// cu tokenul: browserul nu mai contactează MoldSign direct, ci agentul FleetView de pe calculator.
+const SIGN_BRIDGE_ORIGIN = 'http://127.0.0.1:48625';
+const SIGN_BRIDGE_URL = SIGN_BRIDGE_ORIGIN;
+const CSP = `default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ${SIGN_BRIDGE_ORIGIN}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`;
 app.addHook('onSend', async (req, reply) => {
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('X-Frame-Options', 'DENY');
@@ -706,6 +729,22 @@ app.register(async (app) => {
     markSeen(req.user.id, doc.id);
     return { ok: true };
   });
+  // --- semnare cu tokenul prin puntea FleetView ---
+  // Emite un jeton de scurtă durată, legat de utilizatorul autentificat. Browserul îl
+  // trimite tăvii FleetView (ca Bearer), care îl validează prin /api/sign/validate.
+  app.post('/api/sign/token', { preHandler: requireUser }, async (req) => {
+    const token = crypto.randomBytes(32).toString('hex');
+    signTokens.set(sha(token), { userId: req.user.id, exp: Date.now() + SIGN_TOKEN_MS });
+    audit(req, 'jeton de semnare emis');
+    return { token, bridge: SIGN_BRIDGE_URL };
+  });
+  // Apelat server-la-server de puntea FleetView ca să confirme un jeton de semnare.
+  // Jetonul însuși (din corp) este autentificarea; nu se cere cookie de sesiune.
+  app.post('/api/sign/validate', { preHandler: requireSignToken }, async (req) => ({
+    ok: true,
+    user: { username: req.signUser.username, name: req.signUser.full_name },
+  }));
+
   // Semnatarul aflat la rând încarcă versiunea semnată digital; ea devine versiunea pe care o semnează următorul.
   app.post('/api/documents/:id/sign', { preHandler: requireUser }, async (req) => {
     const id = paramId(req);
@@ -715,10 +754,18 @@ app.register(async (app) => {
       await discardUploads(req);
       throw fail(403, 'Nu este rândul dvs. să semnați acest document.');
     }
-    const { saved } = await readUploads(req);
+    const { data, saved } = await readUploads(req);
     const stored = saved.map((f) => f.stored);
+    const viaMoldSign = data?.method === 'moldsign';
     try {
       if (!saved.length) throw fail(400, 'Încărcați documentul semnat.');
+      // Un PDF trebuie să conțină cel puțin o semnătură, iar niciuna nu poate fi deteriorată sau
+      // aplicată pe alt conținut. Încrederea în certificat nu blochează încărcarea; se vede la verificare.
+      for (const f of saved.filter((x) => isPdf(x.name))) {
+        const sigs = pdfsig.verifyPdf(await fs.promises.readFile(path.join(UPLOAD_DIR, f.stored)), DATA_DIR);
+        if (!sigs.length) throw fail(400, `„${f.name}” nu conține nicio semnătură electronică.`);
+        if (sigs.some((s) => s.status === 'invalid')) throw fail(400, `„${f.name}” conține o semnătură nevalidă: ${sigs.find((s) => s.status === 'invalid').problems[0]}`);
+      }
       // Nu putem valida criptografic semnătura, dar putem refuza un fișier identic cu unul deja existent
       // (adică documentul descărcat și încărcat înapoi fără a fi semnat).
       const known = new Set();
@@ -735,7 +782,7 @@ app.register(async (app) => {
         if (!r.changes) throw fail(403, 'Nu este rândul dvs. să semnați acest document.');
         markSeen(req.user.id, id);
       });
-      audit(req, 'document semnat', `#${id} ${doc.title}: ${saved.map((f) => f.name).join(', ')}`);
+      audit(req, 'document semnat', `#${id} ${doc.title}${viaMoldSign ? ' (MoldSign)' : ''}: ${saved.map((f) => f.name).join(', ')}`);
     } catch (e) {
       removeStored(stored);
       throw e;
@@ -875,6 +922,17 @@ app.register(async (app) => {
         `${inline && !req.query.download ? 'inline' : 'attachment'}; filename="${f.name.replace(/[^\x20-\x7e]|["\\]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(f.name)}`
       );
     return reply.send(fs.createReadStream(file));
+  });
+  // Verificarea semnăturilor dintr-un PDF, pe server și fără rețea (vezi src/pdfsig.js).
+  app.get('/api/files/:id/signatures', { preHandler: requireUser }, async (req) => {
+    const acc = accessClause(req.user);
+    const f = db
+      .prepare(`SELECT f.name, f.stored FROM document_files f JOIN documents d ON d.id = f.document_id WHERE f.id = ? AND ${acc.sql}`)
+      .get(paramId(req), ...acc.params);
+    const file = f && path.join(UPLOAD_DIR, f.stored);
+    if (!f || !fs.existsSync(file)) throw fail(404, 'Fișierul nu a fost găsit.');
+    if (!isPdf(f.name)) throw fail(400, 'Verificarea semnăturii este disponibilă doar pentru fișiere PDF.');
+    return { name: f.name, signatures: pdfsig.verifyPdf(await fs.promises.readFile(file), DATA_DIR) };
   });
 });
 

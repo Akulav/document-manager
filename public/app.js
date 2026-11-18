@@ -553,14 +553,140 @@ const FileLink = {
     </a>`,
 };
 
+// ---------- Semnarea cu tokenul prin puntea FleetView ----------
+// Browserul NU mai contactează MoldSign direct (MoldSign refuză originea aplicației, fiindcă
+// nu e în lista STISC). În schimb trimite cererile agentului FleetView de pe calculator
+// („tava"), care le retransmite către MoldSign cu originea permisă. Codul PIN se introduce
+// tot în fereastra MoldSign — nimic nu se semnează fără el. Autentificarea față de tavă: un
+// jeton de semnare obținut de la server după autentificare, pe care tava îl validează înapoi.
+let SIGN_BRIDGE_URL = 'http://127.0.0.1:48625';
+let signToken = null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Obține o singură dată jetonul de semnare (legat de sesiune) și adresa punții.
+async function ensureSignToken() {
+  if (signToken) return signToken;
+  const r = await api('/api/sign/token', { method: 'POST' });
+  signToken = r.token;
+  if (r.bridge) SIGN_BRIDGE_URL = r.bridge;
+  return signToken;
+}
+
+// Trimite o cerere tăvii FleetView, cu jetonul de semnare ca Bearer.
+async function bridge(pathname, init = {}) {
+  const headers = { ...(init.headers || {}) };
+  if (signToken) headers.Authorization = 'Bearer ' + signToken;
+  let r;
+  try {
+    r = await fetch(SIGN_BRIDGE_URL + pathname, { ...init, headers, credentials: 'omit' });
+  } catch {
+    throw new Error('Puntea de semnare FleetView nu răspunde. Asigurați-vă că agentul FleetView rulează pe acest calculator și reîncercați.');
+  }
+  if (r.status === 401) signToken = null; // jeton expirat; va fi recerut la o nouă semnare
+  return r;
+}
+function moldsignError(r) {
+  const e = r.headers.get('error') || '';
+  if (/pin locked/i.test(e)) return 'Codul PIN al tokenului este blocat.';
+  if (/puk locked/i.test(e)) return 'Codul PUK al tokenului este blocat.';
+  if (/invalid pin/i.test(e)) return 'Codul PIN introdus este greșit.';
+  if (r.status === 401 || r.status === 403) return e || 'Semnarea prin puntea FleetView a fost refuzată.';
+  return 'MoldSign nu a putut semna documentul' + (e ? ' (' + e + ').' : '.');
+}
+async function moldsignCertificates() {
+  const r = await bridge('/certificates?private_only=true');
+  if (!r.ok) throw new Error(moldsignError(r));
+  const d = await r.json().catch(() => ({}));
+  return (d.certificateModel || []).filter((c) => c.privateKeyPresent !== false && !c.authority);
+}
+const dnField = (dn, key) => ((new RegExp('(?:^|,)\\s*' + key + '=([^,]+)', 'i').exec(dn || '') || [])[1] || '').trim();
+const certLabel = (c) => c.certificateName || dnField(c.subjectDN, 'CN') || c.label || 'Certificat';
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => reject(new Error('Fișierul nu a putut fi citit.'));
+    fr.readAsDataURL(blob);
+  });
+}
+function base64ToBytes(b64) {
+  const s = atob(b64);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+// Trimite PDF-ul la MoldSign prin tavă (semnătură PAdES) și așteaptă versiunea semnată.
+async function moldsignPdf(blob, cert) {
+  const r = await bridge('/sign/data', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ data: await blobToBase64(blob), contentType: 'pdf', signFormat: 'PAdES', certificate: cert }),
+  });
+  if (!r.ok) throw new Error(moldsignError(r));
+  // răspunsul indică adresa rezultatului: sign/data/{furnizor}/{sesiune}[/{tip}]
+  const loc = r.headers.get('Location');
+  if (!loc) throw new Error('MoldSign nu a întors rezultatul semnării.');
+  let p = new URL(loc, SIGN_BRIDGE_URL).pathname.replace(/\/+$/, '');
+  if (p.split('/').filter(Boolean).length === 4) p += '/pdf';
+  // semnatarul introduce PIN-ul în fereastra MoldSign; așteptăm cel mult 5 minute
+  for (let i = 0; i < 300; i++) {
+    const g = await bridge(p, { headers: { Accept: 'application/json' } });
+    if (g.ok) {
+      const j = await g.json().catch(() => null);
+      if (j && j.base64File) return base64ToBytes(j.base64File);
+    } else if (![202, 204, 409].includes(g.status)) throw new Error(moldsignError(g));
+    await sleep(1000);
+  }
+  throw new Error('Timpul pentru semnare a expirat. Reîncercați.');
+}
+
+// Rezultatul verificării semnăturilor unui PDF, calculat pe server.
+const SIG_STATUS = { valid: 'Semnătură validă', warning: 'Validă, cu observații', invalid: 'Semnătură nevalidă' };
+const SignatureCheck = {
+  components: { Modal },
+  props: { file: Object },
+  emits: ['close'],
+  data: () => ({ sigs: null, error: '' }),
+  async mounted() {
+    try {
+      this.sigs = (await api('/api/files/' + this.file.id + '/signatures')).signatures;
+    } catch (e) {
+      this.error = e.message;
+    }
+  },
+  methods: {
+    label: (s) => SIG_STATUS[s.status],
+    when: (d) => (d ? new Date(d).toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' }) : ''),
+    day: (d) => (d ? new Date(d).toLocaleDateString('ro-RO') : ''),
+  },
+  template: /*html*/ `
+    <Modal :title="'Semnături: ' + file.name" wide ok-label="Închide" cancel-label="" @close="$emit('close')" @submit="$emit('close')">
+      <p v-if="error" class="warn">{{ error }}</p>
+      <p v-else-if="!sigs" class="muted">Se verifică…</p>
+      <p v-else-if="!sigs.length" class="muted">Fișierul nu conține semnături electronice.</p>
+      <div v-for="s in sigs || []" :key="s.index" class="sigcheck" :class="s.status">
+        <div class="sigcheck-head"><b>{{ s.index }}. {{ s.signer || 'Semnatar necunoscut' }}</b><span class="sigstatus">{{ label(s) }}</span></div>
+        <div class="small">
+          <span v-if="s.idnp">IDNP/cod: {{ s.idnp }} · </span><span v-if="s.organization">{{ s.organization }} · </span>
+          <span v-if="s.timestamp && s.timestamp.ok">marcă temporală {{ when(s.timestamp.time) }}</span>
+          <span v-else-if="s.signingTime">semnat la {{ when(s.signingTime) }} (ora calculatorului semnatarului)</span>
+        </div>
+        <div v-if="s.chain && s.chain.length" class="small muted">Certificat: {{ s.chain.join(' → ') }}<template v-if="s.validTo">, valabil până la {{ day(s.validTo) }}</template></div>
+        <ul v-if="s.problems.length" class="sigproblems"><li v-for="p in s.problems" :key="p">{{ p }}</li></ul>
+        <ul class="signotes small muted"><li v-for="n in s.notes" :key="n">{{ n }}</li></ul>
+      </div>
+    </Modal>`,
+};
+
 // Datele din baza de date sunt în UTC ('AAAA-LL-ZZ OO:MM:SS'); le afișăm în ora locală.
 const fmtDateTime = (s) => new Date(s.replace(' ', 'T') + 'Z').toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' });
 
+const isPdfName = (n) => /\.pdf$/i.test(n);
 const DocCard = {
-  components: { FileLink },
+  components: { FileLink, Modal, SignatureCheck },
   props: { doc: Object },
   emits: ['edit'],
-  data: () => ({ busy: false, reminding: false }),
+  data: () => ({ busy: false, reminding: false, signing: '', certPick: null, verifying: null }),
   computed: {
     store: () => store,
     tags: () => tagIndex(),
@@ -581,6 +707,10 @@ const DocCard = {
       if (!signed.length) return this.originals;
       const last = signed[signed.length - 1];
       return signed.filter((f) => f.signed_by === last.signed_by && f.created_at === last.created_at);
+    },
+    // MoldSign semnează doar PDF-uri; pentru alte formate rămâne încărcarea manuală
+    canToken() {
+      return this.latest.length > 0 && this.latest.every((f) => isPdfName(f.name));
     },
   },
   methods: {
@@ -616,19 +746,61 @@ const DocCard = {
         okLabel: 'Încarcă',
       });
       if (!ok) return;
-      const fd = new FormData();
-      for (const f of files) fd.append('files', f);
       this.busy = true;
       try {
-        const r = await api('/api/documents/' + this.doc.id + '/sign', { method: 'POST', form: fd });
-        const note = mailNote(r.mail);
-        toast(note || 'Versiunea semnată a fost încărcată.', !!note);
-        await loadDocs();
+        await this.sendSigned(files);
+        toast(this.lastNote || 'Versiunea semnată a fost încărcată.', !!this.lastNote);
       } catch (err) {
         toast(err.message, true);
       }
       this.busy = false;
     },
+    async sendSigned(files, data) {
+      const fd = new FormData();
+      if (data) fd.append('data', JSON.stringify(data));
+      for (const f of files) fd.append('files', f);
+      const r = await api('/api/documents/' + this.doc.id + '/sign', { method: 'POST', form: fd });
+      this.lastNote = mailNote(r.mail);
+      await loadDocs();
+    },
+    // Semnarea cu tokenul: alegerea certificatului, semnarea fiecărui PDF în MoldSign, apoi încărcarea.
+    async signWithToken() {
+      this.busy = true;
+      this.signing = 'Se contactează MoldSign…';
+      try {
+        await ensureSignToken();
+        const certs = await moldsignCertificates();
+        if (!certs.length) throw new Error('MoldSign nu găsește niciun certificat de semnare. Conectați tokenul și reîncercați.');
+        const names = this.latest.map((f) => f.name).join(', ');
+        const cert = await new Promise((resolve) => (this.certPick = { certs, chosen: 0, names, resolve }));
+        if (!cert) return;
+        const signed = [];
+        for (const f of this.latest) {
+          this.signing = 'Introduceți PIN-ul în fereastra MoldSign…';
+          const res = await fetch('/api/files/' + f.id + '?download=1', { credentials: 'same-origin' });
+          if (!res.ok) throw new Error('„' + f.name + '” nu a putut fi descărcat.');
+          const bytes = await moldsignPdf(await res.blob(), cert);
+          signed.push(new File([bytes], f.name, { type: 'application/pdf' }));
+        }
+        this.signing = 'Se încarcă versiunea semnată…';
+        await this.sendSigned(signed, { method: 'moldsign' });
+        toast(this.lastNote || 'Documentul a fost semnat cu MoldSign.', !!this.lastNote);
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        this.busy = false;
+        this.signing = '';
+        this.certPick = null;
+      }
+    },
+    pickCert(ok) {
+      const p = this.certPick;
+      this.certPick = null;
+      if (p) p.resolve(ok ? p.certs[p.chosen] : null);
+    },
+    certLabel,
+    certIssuer: (c) => dnField(c.issuerDN, 'CN'),
+    isPdfName,
     async remind() {
       this.reminding = true;
       try {
@@ -678,7 +850,7 @@ const DocCard = {
               <span class="step">✓</span>
               <div>
                 <b>{{ f.signed_by_name }}</b><span class="small"> — a semnat (cont șters)</span>
-                <div class="files"><FileLink :file="f" @open="opened" /></div>
+                <div class="files"><FileLink :file="f" @open="opened" /><button v-if="isPdfName(f.name)" class="btn link sm" @click="verifying = f">Verifică semnătura</button></div>
               </div>
             </li>
             <li v-for="(s, i) in doc.signers" :key="s.id" :class="{ ok: s.signed_at, turn: s.id === doc.signTurn }">
@@ -688,19 +860,33 @@ const DocCard = {
                 <span class="small"> — {{ s.signed_at ? 'a semnat la ' + fmtDateTime(s.signed_at) : s.id === doc.signTurn ? 'este la rând' : 'așteaptă' }}</span>
                 <span v-if="!s.active && !s.signed_at" class="warn small"> · cont dezactivat, lanțul este blocat</span>
                 <div v-if="signedFiles(s.id).length" class="files">
-                  <FileLink v-for="f in signedFiles(s.id)" :key="f.id" :file="f" @open="opened" />
+                  <template v-for="f in signedFiles(s.id)" :key="f.id">
+                    <FileLink :file="f" @open="opened" />
+                    <button v-if="isPdfName(f.name)" class="btn link sm" @click="verifying = f">Verifică semnătura</button>
+                  </template>
                 </div>
               </div>
             </li>
           </ol>
           <div v-if="doc.mySign === 'pending'" class="myturn">
-            <div><b>Este rândul dvs. să semnați.</b> Descărcați versiunea curentă, semnați-o digital, apoi încărcați fișierul semnat.</div>
+            <div v-if="canToken"><b>Este rândul dvs. să semnați.</b> Semnați cu tokenul prin MoldSign sau, dacă ați semnat în altă aplicație, încărcați fișierul semnat.</div>
+            <div v-else><b>Este rândul dvs. să semnați.</b> Descărcați versiunea curentă, semnați-o digital, apoi încărcați fișierul semnat.</div>
             <div class="files">
               <FileLink v-for="f in latest" :key="f.id" :file="f" @open="opened" />
               <input ref="signed" type="file" multiple hidden @change="uploadSigned" />
-              <button class="btn primary sm" :disabled="busy" @click="$refs.signed.click()">{{ busy ? 'Se încarcă…' : 'Încarcă documentul semnat' }}</button>
+              <button v-if="canToken" class="btn primary sm" :disabled="busy" @click="signWithToken">{{ signing || 'Semnează cu MoldSign' }}</button>
+              <button class="btn sm" :class="{ primary: !canToken }" :disabled="busy" @click="$refs.signed.click()">{{ busy && !signing ? 'Se încarcă…' : 'Încarcă documentul semnat' }}</button>
             </div>
           </div>
+          <Modal v-if="certPick" title="Semnare cu MoldSign" ok-label="Semnează" @close="pickCert(false)" @submit="pickCert(true)">
+            <p class="dialog-msg">„{{ certPick.names }}” va fi semnat electronic. După ce apăsați „Semnează”, MoldSign vă cere codul PIN al tokenului.</p>
+            <div class="section-title">Certificatul de semnare</div>
+            <label v-for="(c, i) in certPick.certs" :key="i" class="check certopt">
+              <input type="radio" name="cert" :value="i" v-model="certPick.chosen" />
+              <span><b>{{ certLabel(c) }}</b><span class="muted small"><template v-if="certIssuer(c)"> · emis de {{ certIssuer(c) }}</template></span></span>
+            </label>
+          </Modal>
+          <SignatureCheck v-if="verifying" :file="verifying" @close="verifying = null" />
         </div>
 
         <div class="doc-meta">

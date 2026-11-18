@@ -480,3 +480,18 @@ label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-si
   .oc-scroll { max-height: none; overflow: visible; background: none; border: 0; }
   body { background: #fff; }
 }
+
+/* semnare cu MoldSign și verificarea semnăturilor */
+.modal { color: var(--text); }
+.certopt { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; }
+.sigcheck { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.sigcheck.valid { border-left-color: #12b76a; }
+.sigcheck.warning { border-left-color: #f79009; }
+.sigcheck.invalid { border-left-color: var(--danger); }
+.sigcheck-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; margin-bottom: 4px; }
+.sigstatus { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 1px 9px; white-space: nowrap; }
+.sigcheck.valid .sigstatus { background: #ecfdf3; color: #05603a; }
+.sigcheck.warning .sigstatus { background: #fff7e6; color: #7a4b00; }
+.sigcheck.invalid .sigstatus { background: #fef3f2; color: var(--danger); }
+.sigproblems { margin: 6px 0 0; padding-left: 18px; color: var(--danger); }
+.signotes { margin: 4px 0 0; padding-left: 18px; }
