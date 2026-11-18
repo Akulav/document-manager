@@ -1177,9 +1177,173 @@ const UserForm = {
     </Modal>`,
 };
 
+// ---------- import în masă al angajaților (CSV) ----------
+// Coloane recunoscute (antet, fără diacritice/majuscule): Nume, Prenume, Funcția, E-mail,
+// Utilizator, Subdiviziune. „Subdiviziune” este calea în organigramă, de sus în jos, cu „>”
+// între niveluri (ex. „Direcția generală X > Direcția Y”). Lipsa coloanei „Utilizator” =
+// prenume.nume fără diacritice. Separatorul (; sau ,) se detectează din antet.
+const fold = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+const slugName = (s) => fold(s).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+function parseCsv(text) {
+  text = text.replace(/^﻿/, '');
+  const firstLine = text.split(/\r?\n/, 1)[0];
+  const sep = (firstLine.match(/;/g) || []).length >= (firstLine.match(/,/g) || []).length ? ';' : ',';
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') (cell += '"'), i++;
+      else if (c === '"') quoted = false;
+      else cell += c;
+    } else if (c === '"') quoted = true;
+    else if (c === sep) row.push(cell), (cell = '');
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell), rows.push(row), (row = []), (cell = '');
+    } else cell += c;
+  }
+  if (cell || row.length) row.push(cell), rows.push(row);
+  return rows.filter((r) => r.some((c) => c.trim()));
+}
+function peopleFromCsv(text) {
+  const [head, ...lines] = parseCsv(text);
+  if (!head) throw new Error('Fișierul este gol.');
+  const col = (...names) => head.findIndex((h) => names.includes(fold(h)));
+  const c = {
+    nume: col('nume'),
+    prenume: col('prenume'),
+    functia: col('functia', 'functie', 'funcția'),
+    email: col('e-mail', 'email'),
+    user: col('utilizator', 'nume de utilizator', 'username'),
+    unit: col('subdiviziune', 'subdiviziunea'),
+  };
+  if (c.nume < 0 || c.prenume < 0) throw new Error('Antetul trebuie să conțină cel puțin coloanele „Nume” și „Prenume”.');
+  const at = (r, i) => (i >= 0 ? String(r[i] ?? '').trim() : '');
+  return lines.map((r) => {
+    const nume = at(r, c.nume);
+    const prenume = at(r, c.prenume);
+    return {
+      full_name: [prenume, nume].filter(Boolean).join(' '),
+      username: at(r, c.user) || [slugName(prenume), slugName(nume)].filter(Boolean).join('.'),
+      email: at(r, c.email),
+      position: at(r, c.functia),
+      path: at(r, c.unit).split(/\s*[>›]\s*/).filter(Boolean),
+    };
+  });
+}
+
+const ImportPeople = {
+  components: { Modal },
+  emits: ['close', 'done'],
+  data: () => ({ rows: [], fileName: '', parentId: null, preview: null, result: null, busy: false, error: '' }),
+  created() {
+    // Cu o singură subdiviziune de nivel superior (de regulă instituția), subdiviziunile noi intră sub ea.
+    const top = childUnits(null);
+    if (top.length === 1) this.parentId = top[0].id;
+  },
+  computed: {
+    units: () => flatUnits(),
+    okLabel() {
+      if (this.result) return 'Închide';
+      return this.preview ? 'Importă ' + this.preview.created.length + ' angajați' : 'Verifică fișierul';
+    },
+  },
+  methods: {
+    async pick(e) {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      this.error = '';
+      this.preview = null;
+      this.fileName = file.name;
+      try {
+        this.rows = peopleFromCsv(await file.text());
+        if (!this.rows.length) throw new Error('Fișierul nu conține angajați.');
+        await this.check();
+      } catch (err) {
+        this.rows = [];
+        this.error = err.message;
+      }
+    },
+    async check() {
+      this.busy = true;
+      try {
+        this.preview = await api('/api/admin/import-people', { method: 'POST', body: { rows: this.rows, parent_id: this.parentId, dry_run: true } });
+      } catch (err) {
+        this.error = err.message;
+      }
+      this.busy = false;
+    },
+    async submit() {
+      if (this.result) return this.close();
+      if (!this.rows.length) return (this.error = 'Alegeți mai întâi fișierul CSV.');
+      if (!this.preview) return this.check();
+      if (!this.preview.created.length) return (this.error = 'Nu este niciun angajat nou de importat.');
+      this.busy = true;
+      try {
+        this.result = await api('/api/admin/import-people', { method: 'POST', body: { rows: this.rows, parent_id: this.parentId } });
+        await loadShared();
+      } catch (err) {
+        this.error = err.message;
+      }
+      this.busy = false;
+    },
+    close() {
+      this.$emit(this.result ? 'done' : 'close');
+    },
+    // Lista cu parolele temporare, de transmis angajaților (o singură dată; nu se mai pot vedea ulterior).
+    downloadPasswords() {
+      const q = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+      const lines = [['Nume și prenume', 'Utilizator', 'Parolă temporară', 'E-mail', 'Subdiviziune'].map(q).join(';')];
+      for (const c of this.result.created) lines.push([c.full_name, c.username, c.password, c.email, c.unit].map(q).join(';'));
+      const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'parole-temporare.csv';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    },
+  },
+  template: /*html*/ `
+    <Modal title="Import angajați din CSV" xl :busy="busy" :ok-label="okLabel" busy-label="Se verifică…" :cancel-label="result ? '' : 'Anulează'" @close="close" @submit="submit">
+      <template v-if="!result">
+        <p class="dialog-msg">Coloane: <b>Nume</b>, <b>Prenume</b>, Funcția, E-mail, Utilizator, Subdiviziune (calea în organigramă, cu „&gt;” între niveluri). Subdiviziunile lipsă se creează; conturile existente nu se modifică. Fiecare cont nou primește o parolă temporară, de schimbat la prima autentificare.</p>
+        <div class="row">
+          <label class="field"><span>Fișierul CSV</span><input type="file" accept=".csv,text/csv" @change="pick" /></label>
+          <label class="field"><span>Plasează subdiviziunile noi de nivel superior sub</span>
+            <select v-model="parentId" @change="rows.length && check()">
+              <option :value="null">— nivelul superior —</option>
+              <option v-for="u in units" :key="u.id" :value="u.id">{{ u.label }}</option>
+            </select>
+          </label>
+        </div>
+        <p v-if="error" class="warn">{{ error }}</p>
+        <template v-if="preview">
+          <p><b>{{ preview.created.length }}</b> conturi noi, <b>{{ preview.units.length }}</b> subdiviziuni noi<template v-if="preview.skipped.length">, <b>{{ preview.skipped.length }}</b> rânduri omise</template> ({{ fileName }}).</p>
+          <p v-if="preview.units.length" class="small muted">Subdiviziuni noi: {{ preview.units.join('; ') }}</p>
+          <div v-if="preview.skipped.length" class="small"><b>Omise:</b><ul><li v-for="s in preview.skipped" :key="s.line">rândul {{ s.line }} {{ s.name }}: {{ s.reason }}</li></ul></div>
+          <div class="table-wrap import-preview">
+            <table>
+              <thead><tr><th>Nume și prenume</th><th>Utilizator</th><th>Funcția</th><th>E-mail</th><th>Subdiviziune</th></tr></thead>
+              <tbody><tr v-for="c in preview.created" :key="c.line"><td>{{ c.full_name }}</td><td><code class="uname">{{ c.username }}</code></td><td>{{ rows[c.line - 1].position || '—' }}</td><td>{{ c.email || '—' }}</td><td>{{ c.unit || '—' }}</td></tr></tbody>
+            </table>
+          </div>
+        </template>
+      </template>
+      <template v-else>
+        <p><b>{{ result.created.length }}</b> conturi create și <b>{{ result.units.length }}</b> subdiviziuni adăugate în organigramă.</p>
+        <p class="warn">Descărcați acum lista cu parolele temporare: după închiderea ferestrei nu mai poate fi afișată. Păstrați-o în siguranță și ștergeți-o după ce ați transmis parolele.</p>
+        <button type="button" class="btn primary" @click="downloadPasswords">Descarcă parolele temporare (CSV)</button>
+      </template>
+    </Modal>`,
+};
+
 const UsersView = {
-  components: { UserForm },
-  data: () => ({ users: [], editing: undefined, q: '', loaded: false }),
+  components: { UserForm, ImportPeople },
+  data: () => ({ users: [], editing: undefined, q: '', loaded: false, importing: false }),
   computed: {
     store: () => store,
     shown() {
@@ -1227,6 +1391,7 @@ const UsersView = {
       </div>
       <div class="head-actions">
         <input v-model="q" type="search" class="search-sm" placeholder="Caută după nume, funcție, subdiviziune…" aria-label="Caută utilizatori" />
+        <button class="btn" @click="importing = true">Importă din CSV…</button>
         <button class="btn primary" @click="editing = null">+ Adaugă utilizator</button>
       </div>
     </div>
@@ -1250,7 +1415,8 @@ const UsersView = {
         </tbody>
       </table>
     </div>
-    <UserForm v-if="editing !== undefined" :user="editing" @close="editing = undefined" @saved="saved" />`,
+    <UserForm v-if="editing !== undefined" :user="editing" @close="editing = undefined" @saved="saved" />
+    <ImportPeople v-if="importing" @close="importing = false" @done="(importing = false), load()" />`,
 };
 
 // ---------- organigramă ----------

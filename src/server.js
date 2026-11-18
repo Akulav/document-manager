@@ -193,6 +193,15 @@ function readUser(body) {
   return { full_name, username, role, unit_id, position: str(body.position, 150), email, active: body.active === false ? 0 : 1 };
 }
 
+// Parolă temporară ușor de transmis: fără caractere care se confundă (0/O, 1/l/I).
+function tempPassword() {
+  const alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(12);
+  let out = '';
+  for (const b of bytes) out += alphabet[b % alphabet.length];
+  return out;
+}
+
 function readPassword(v) {
   const p = String(v ?? '');
   if (p.length < 10 || p.length > 200) throw fail(400, 'Parola trebuie să aibă cel puțin 10 caractere.');
@@ -566,6 +575,112 @@ app.register(async (app) => {
       .run(u.username, u.full_name, u.position, u.email, u.unit_id, u.role, u.active, hashPassword(password));
     audit(req, 'utilizator creat', `${u.username} (${u.role})`);
     return { id: lastId(r) };
+  });
+
+  // --- import în masă: angajați + organigramă ---
+  // Primește rândurile citite din CSV în browser: { rows: [{ full_name, username, email, position,
+  // path: [denumiri de subdiviziuni, de sus în jos] }], parent_id, dry_run }.
+  // Subdiviziunile se caută după denumire (fără diacritice și majuscule) și se creează doar cele care
+  // lipsesc; conturile existente (același utilizator sau e-mail) rămân neatinse. Conturile noi au rolul
+  // „user” și o parolă temporară, care trebuie schimbată la prima autentificare. Cu dry_run nu se
+  // salvează nimic: răspunsul arată doar ce s-ar întâmpla.
+  app.post('/api/admin/import-people', { preHandler: requireAdmin }, async (req) => {
+    const body = req.body || {};
+    const rows = Array.isArray(body.rows) ? body.rows.slice(0, 2000) : [];
+    if (!rows.length) throw fail(400, 'Fișierul nu conține angajați.');
+    const rootId = idOrNull(body.parent_id);
+    if (rootId !== null && !unitMap().has(rootId)) throw fail(400, 'Subdiviziunea superioară nu există.');
+    const dryRun = body.dry_run === true;
+
+    const norm = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const typeOf = (name) => {
+      const n = norm(name);
+      if (n.startsWith('conducere')) return 'Conducere';
+      if (n.startsWith('directi')) return 'Direcție';
+      if (n.startsWith('serviciu')) return 'Serviciu';
+      if (n.startsWith('secti')) return 'Secție';
+      return '';
+    };
+    const result = { units: [], created: [], skipped: [], dry_run: dryRun };
+    const ROLLBACK = new Error('rollback');
+
+    try {
+      tx(() => {
+        const byName = new Map(); // denumire normalizată -> subdiviziuni
+        for (const u of db.prepare('SELECT id, name, parent_id FROM units').all()) {
+          const k = norm(u.name);
+          byName.set(k, [...(byName.get(k) || []), u]);
+        }
+        const resolved = new Map(); // calea normalizată -> id
+        const insertUnit = db.prepare('INSERT INTO units (name, type, parent_id, sort) VALUES (?, ?, ?, 0)');
+        const resolve = (path) => {
+          let parent = rootId;
+          let key = '';
+          for (const raw of path) {
+            const name = str(raw, 200);
+            if (!name) continue;
+            key += '\u0001' + norm(name);
+            if (resolved.has(key)) {
+              parent = resolved.get(key);
+              continue;
+            }
+            const same = byName.get(norm(name)) || [];
+            // aceeași denumire sub același părinte; altfel o denumire unică oriunde în organigramă
+            const hit = same.find((u) => u.parent_id === parent) || (same.length === 1 ? same[0] : null);
+            let id;
+            if (hit) id = hit.id;
+            else {
+              id = lastId(insertUnit.run(name, typeOf(name), parent));
+              byName.set(norm(name), [...same, { id, name, parent_id: parent }]);
+              result.units.push(name);
+            }
+            resolved.set(key, id);
+            parent = id;
+          }
+          return parent;
+        };
+
+        const insertUser = db.prepare(
+          "INSERT INTO users (username, full_name, position, email, unit_id, role, active, pass_hash, must_change) VALUES (?, ?, ?, ?, ?, 'user', 1, ?, 1)"
+        );
+        rows.forEach((row, i) => {
+          const line = i + 1;
+          const name = str(row && row.full_name, 150);
+          let u;
+          try {
+            u = readUser({ ...(row || {}), role: 'user', unit_id: null, active: true });
+          } catch (e) {
+            result.skipped.push({ line, name, reason: e.message });
+            return;
+          }
+          if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(u.username)) {
+            result.skipped.push({ line, name, reason: `utilizatorul „${u.username}” există deja` });
+            return;
+          }
+          if (u.email && db.prepare('SELECT 1 FROM users WHERE lower(email) = lower(?)').get(u.email)) {
+            result.skipped.push({ line, name, reason: `adresa ${u.email} este deja folosită` });
+            return;
+          }
+          const path = Array.isArray(row.path) ? row.path.slice(0, 10) : [];
+          const unitId = resolve(path);
+          const password = dryRun ? '' : tempPassword();
+          insertUser.run(u.username, u.full_name, u.position, u.email, unitId, dryRun ? '-' : hashPassword(password));
+          result.created.push({ line, username: u.username, full_name: u.full_name, email: u.email, unit: path.map((p) => str(p, 200)).filter(Boolean).join(' › '), password });
+        });
+        if (dryRun) throw ROLLBACK;
+      });
+    } catch (e) {
+      if (e !== ROLLBACK) throw e;
+    }
+
+    if (!dryRun && (result.created.length || result.units.length)) {
+      audit(
+        req,
+        'import angajați',
+        `${result.created.length} utilizatori (${result.created.map((c) => c.username).join(', ').slice(0, 1500)}), ${result.units.length} subdiviziuni noi`
+      );
+    }
+    return result;
   });
   app.put('/api/users/:id', { preHandler: requireAdmin }, async (req) => {
     const id = paramId(req);

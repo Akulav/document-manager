@@ -495,3 +495,6 @@ label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-si
 .sigcheck.invalid .sigstatus { background: #fef3f2; color: var(--danger); }
 .sigproblems { margin: 6px 0 0; padding-left: 18px; color: var(--danger); }
 .signotes { margin: 4px 0 0; padding-left: 18px; }
+
+/* Import angajați: previzualizarea rămâne derulabilă în fereastră */
+.import-preview { max-height: 46vh; overflow: auto; margin-top: 8px; }
