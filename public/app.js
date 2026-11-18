@@ -572,8 +572,10 @@ async function ensureSignToken() {
   return signToken;
 }
 
-// Trimite o cerere tăvii FleetView, cu jetonul de semnare ca Bearer.
-async function bridge(pathname, init = {}) {
+// Trimite o cerere tăvii FleetView, cu jetonul de semnare ca Bearer. Dacă jetonul a
+// expirat (401), cere unul nou și reîncearcă o singură dată: tava respinge cererea
+// înainte de a o trimite la MoldSign, deci reîncercarea este sigură.
+async function bridge(pathname, init = {}, retried = false) {
   const headers = { ...(init.headers || {}) };
   if (signToken) headers.Authorization = 'Bearer ' + signToken;
   let r;
@@ -582,7 +584,13 @@ async function bridge(pathname, init = {}) {
   } catch {
     throw new Error('Puntea de semnare FleetView nu răspunde. Asigurați-vă că agentul FleetView rulează pe acest calculator și reîncercați.');
   }
-  if (r.status === 401) signToken = null; // jeton expirat; va fi recerut la o nouă semnare
+  if (r.status === 401) {
+    signToken = null;
+    if (!retried) {
+      await ensureSignToken();
+      return bridge(pathname, init, true);
+    }
+  }
   return r;
 }
 function moldsignError(r) {

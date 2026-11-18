@@ -100,6 +100,7 @@ const reminded = new Map(); // document -> momentul ultimei retrimiteri a e-mail
 // apelând înapoi /api/sign/validate. Jetonul este legat de utilizator și expiră repede.
 const signTokens = new Map(); // sha(token) -> { userId, exp }
 const SIGN_TOKEN_MS = 15 * 60000; // acoperă o sesiune de semnare (PIN + așteptare ~5 min)
+const MAX_SIGN_TOKENS_PER_USER = 5;
 setInterval(() => {
   const now = Date.now();
   for (const [k, f] of loginFails) if (f.until < now && f.last < now - 30 * 60000) loginFails.delete(k);
@@ -733,6 +734,10 @@ app.register(async (app) => {
   // Emite un jeton de scurtă durată, legat de utilizatorul autentificat. Browserul îl
   // trimite tăvii FleetView (ca Bearer), care îl validează prin /api/sign/validate.
   app.post('/api/sign/token', { preHandler: requireUser }, async (req) => {
+    // Cel mult câteva jetoane active per utilizator (mai multe file deschise), ca
+    // cererile repetate să nu umple memoria; se renunță la cele mai vechi.
+    const mine = [...signTokens].filter(([, t]) => t.userId === req.user.id);
+    for (const [k] of mine.slice(0, Math.max(0, mine.length - (MAX_SIGN_TOKENS_PER_USER - 1)))) signTokens.delete(k);
     const token = crypto.randomBytes(32).toString('hex');
     signTokens.set(sha(token), { userId: req.user.id, exp: Date.now() + SIGN_TOKEN_MS });
     audit(req, 'jeton de semnare emis');
