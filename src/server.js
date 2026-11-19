@@ -893,15 +893,21 @@ app.register(async (app) => {
       for (const f of saved) {
         if (known.has(await fileHash(f.stored))) throw fail(400, `„${f.name}” este identic cu un fișier deja existent. Încărcați versiunea semnată de dvs.`);
       }
+      let replaced = [];
       tx(() => {
         // lanțul poate fi modificat de autor cât timp fișierul se încarcă: verificăm din nou, atomic
         if (currentSigner(id) !== req.user.id) throw fail(403, 'Ordinea semnării s-a schimbat între timp; nu mai este rândul dvs.');
-        const ins = db.prepare("INSERT INTO document_files (document_id, name, stored, size, signed_by, signed_by_name, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))");
+        // Se păstrează doar originalele și ultima versiune semnată: noua versiune conține deja
+        // semnăturile anterioare, deci versiunile semnate intermediare se elimină.
+        replaced = db.prepare('SELECT stored FROM document_files WHERE document_id = ? AND signed_by_name IS NOT NULL').all(id).map((f) => f.stored);
+        db.prepare('DELETE FROM document_files WHERE document_id = ? AND signed_by_name IS NOT NULL').run(id);
+        const ins =db.prepare("INSERT INTO document_files (document_id, name, stored, size, signed_by, signed_by_name, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))");
         saved.forEach((f) => ins.run(id, f.name, f.stored, f.size, req.user.id, req.user.full_name));
         const r = db.prepare("UPDATE document_signers SET signed_at = datetime('now') WHERE document_id = ? AND user_id = ? AND signed_at IS NULL").run(id, req.user.id);
         if (!r.changes) throw fail(403, 'Nu este rândul dvs. să semnați acest document.');
         markSeen(req.user.id, id);
       });
+      removeStored(replaced);
       audit(req, 'document semnat', `#${id} ${doc.title}${viaMoldSign ? ' (MoldSign)' : ''}: ${saved.map((f) => f.name).join(', ')}`);
     } catch (e) {
       removeStored(stored);

@@ -40,6 +40,7 @@ O aplicație web pentru rețeaua internă. Fără telemetrie. Fără CDN. Fără
 ### ✍️ Semnare în lanț
 - Autorul încarcă documentul și stabilește ordinea semnatarilor. Primul îl descarcă, îl semnează digital (în afara
   aplicației) și încarcă versiunea semnată; apoi următorul, și tot așa.
+- Se păstrează doar originalele și ultima versiune semnată (care conține deja semnăturile anterioare).
 - Persoana aflată la rând primește un **e-mail**.
 - Aplicația nu validează criptografic semnătura; refuză doar un fișier identic cu unul deja existent.
 

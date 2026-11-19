@@ -83,29 +83,33 @@ label.field > span { display: block; font-size: 13px; font-weight: 600; margin-b
 .side-item { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left; border: 0; background: none; font: inherit; color: inherit; padding: 6px 10px; border-radius: 7px; cursor: pointer; }
 .side-item:hover { background: #f2f5f9; }
 .side-item.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.side-item .count { color: var(--muted); font-size: 12px; font-weight: 400; }
+.side-item .count { color: var(--muted); font-size: 12px; font-weight: 400; flex: 0 0 auto; }
+.side-item > span:first-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-cat { font-weight: 600; margin-top: 6px; }
 .side-tag { padding-left: 28px; font-size: 14px; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; }
 .toolbar { display: flex; gap: 10px; margin-bottom: 16px; }
 .toolbar select { width: 150px; }
-.month { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 22px 0 8px; }
+.month { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 14px 0 6px; }
 .month:first-child { margin-top: 0; }
-.doc { display: flex; gap: 16px; padding: 14px 16px; margin-bottom: 8px; }
-.doc-date { flex: 0 0 56px; text-align: center; border-right: 1px solid var(--border); padding-right: 14px; }
-.doc-date b { display: block; font-size: 24px; line-height: 1.1; color: var(--accent); }
-.doc-date span { font-size: 12px; color: var(--muted); text-transform: uppercase; }
+/* lista de documente: compactă, ca să încapă multe pe ecran */
+.doc { display: flex; gap: 12px; padding: 8px 12px; margin-bottom: 5px; align-items: flex-start; }
+.doc-date { flex: 0 0 38px; text-align: center; border-right: 1px solid var(--border); padding-right: 10px; }
+.doc-date b { display: block; font-size: 18px; line-height: 1.1; color: var(--accent); }
+.doc-date span { font-size: 11px; color: var(--muted); text-transform: uppercase; }
 .doc-body { flex: 1; min-width: 0; }
-.doc-title { font-weight: 600; font-size: 16px; }
-.doc-nr { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 14px; }
-.doc-desc { margin: 4px 0 0; color: #3b4758; white-space: pre-wrap; }
-.doc-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
-.chip { display: inline-flex; align-items: center; border-radius: 999px; padding: 1px 10px; font-size: 12.5px; font-weight: 500; border: 1px solid; }
+.doc-line { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; }
+.doc-title { flex: 1 1 260px; min-width: 0; font-weight: 600; font-size: 15px; line-height: 1.35; }
+.doc-nr { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 13px; white-space: nowrap; }
+.doc-meta { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; justify-content: flex-end; min-width: 0; max-width: 100%; }
+.chip { display: inline-block; border-radius: 999px; padding: 0 8px; font-size: 12px; font-weight: 500; border: 1px solid; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .chip.vis { border-color: var(--border); color: var(--muted); background: #f8f9fb; }
-.files { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; }
-.file { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; text-decoration: none; font-size: 14px; background: #fafbfc; }
+.files { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.files-sep { font-size: 12px; color: #05603a; font-weight: 600; margin-left: 4px; }
+.file { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); border-radius: 6px; padding: 1px 8px; text-decoration: none; font-size: 13px; background: #fafbfc; }
 .file:hover { border-color: var(--accent); }
-.doc-actions { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
+.doc-actions { display: flex; gap: 0; align-items: center; flex: 0 0 auto; }
+.doc-actions .btn.link { padding: 2px 6px; font-size: 13px; }
 .empty { text-align: center; padding: 50px 20px; color: var(--muted); }
 
 /* alegere etichete / vizibilitate în formular */
@@ -159,13 +163,14 @@ label.field > span { display: block; font-size: 13px; font-weight: 600; margin-b
 ul.bare { list-style: none; margin: 0; padding: 0; }
 
 /* organigramă: schema (arbore de sus în jos) */
-.oc-scroll { --line: #b9c4d3; --oc-w: 264px; overflow: auto; padding: 24px 16px 32px; min-height: 360px; max-height: calc(100vh - 230px); cursor: grab; background: radial-gradient(circle, #dfe5ee 1px, transparent 1.2px) 0 0 / 18px 18px, #fbfcfe; }
+.page.full { max-width: none; padding-bottom: 20px; }
+.oc-scroll { --line: #b9c4d3; --oc-w: 264px; overflow: auto; padding: 24px 16px 32px; min-height: 360px; height: calc(100vh - 220px); max-height: calc(100vh - 220px); cursor: grab; background: radial-gradient(circle, #dfe5ee 1px, transparent 1.2px) 0 0 / 18px 18px, #fbfcfe; }
 .oc-scroll.panning { cursor: grabbing; user-select: none; }
 .oc-canvas { width: max-content; min-width: 100%; }
 .oc-level, .oc-stack { list-style: none; margin: 0; padding: 0; }
 .oc-level { display: flex; justify-content: center; padding-top: 20px; position: relative; }
 .oc-level > li { position: relative; display: flex; flex-direction: column; align-items: center; padding: 20px 10px 0; }
-.oc-root { padding-top: 0; }
+.oc-root { padding-top: 0; width: max-content; margin: 0 auto; }
 .oc-root > li { padding-top: 0; }
 /* liniile orizontale dintre frați și coborârea spre fiecare card */
 .oc-level > li::before, .oc-level > li::after { content: ""; position: absolute; top: 0; width: 50%; height: 20px; border-top: 2px solid var(--line); }
@@ -251,9 +256,13 @@ tr.off td { color: var(--muted); }
 /* categorii */
 .cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; }
 .cat { padding: 16px; border-top: 4px solid; }
-.cat-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.cat-head h2 { flex: 1; }
-.tagrow { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed var(--border); }
+/* denumirile lungi rămân pe un singur rând (textul întreg apare la trecerea cu mausul) */
+.cat-head { display: flex; align-items: center; gap: 2px; margin-bottom: 10px; min-width: 0; }
+.cat-head h2 { flex: 1; min-width: 0; margin-right: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tagrow { display: flex; align-items: center; gap: 2px; padding: 2px 0; border-bottom: 1px dashed var(--border); min-width: 0; }
+.tagname { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tagrow .icon-btn { opacity: .55; }
+.tagrow:hover .icon-btn, .tagrow .icon-btn:focus-visible { opacity: 1; }
 .addrow { display: flex; gap: 8px; margin-top: 10px; }
 
 /* ferestre modale și notificări */
@@ -273,10 +282,6 @@ tr.off td { color: var(--muted); }
 .nav-count { background: #e5484d; color: #fff; border-radius: 999px; font-size: 12px; padding: 0 7px; margin-left: 6px; font-weight: 700; }
 .badge.new { background: #e5484d; color: #fff; margin-right: 6px; vertical-align: 2px; }
 .doc.unseen { border-left: 4px solid #e5484d; }
-.signbox { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: #fff7e6; border: 1px solid #f5d490; color: #7a4b00; }
-.signbox.done { background: #ecfdf3; border-color: #a6e3c0; color: #05603a; }
-.signer { font-size: 13.5px; }
-.signer.ok { font-weight: 600; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .modal-body { padding: 18px 20px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--border); }
@@ -285,7 +290,10 @@ tr.off td { color: var(--muted); }
 .toast.err { background: var(--danger); }
 
 @media (max-width: 860px) {
-  .docs, .form-cols { grid-template-columns: 1fr; }
+  .docs, .form-cols { grid-template-columns: minmax(0, 1fr); }
+  .doc { flex-wrap: wrap; }
+  .doc-body { flex-basis: calc(100% - 52px); }
+  .doc-actions { width: 100%; justify-content: flex-end; margin-top: -2px; }
   .side { position: static; }
   .topbar-in { height: auto; flex-wrap: wrap; padding: 10px 16px; gap: 8px; }
   .vis-cols, .row { grid-template-columns: 1fr; flex-direction: column; }
@@ -328,19 +336,24 @@ h1 { letter-spacing: -.2px; }
 .ext { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .3px; padding: 1px 5px; border-radius: 4px; color: #fff; background: #667085; }
 .ext.pdf { background: #c8372d; } .ext.doc { background: #2b62b8; } .ext.xls { background: #1e7b4b; } .ext.img { background: #8a4fc7; } .ext.sig { background: #b7791f; }
 
-/* lanțul de semnare */
-.signbox { display: block; padding: 10px 12px; }
-.sign-head { display: flex; align-items: center; gap: 10px; }
-.sign-head .btn { margin-left: auto; }
+/* lanțul de semnare: un singur rând cu semnatarii în ordine */
+.signline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 5px; padding: 3px 8px; border-radius: 6px; background: #fff7e6; border: 1px solid #f5d490; color: #7a4b00; font-size: 13px; }
+.signline.done { background: #ecfdf3; border-color: #a6e3c0; color: #05603a; }
+.sign-state { font-weight: 700; white-space: nowrap; }
+.sign-tools { margin-left: auto; display: flex; gap: 2px; }
+.sign-tools .btn.link { padding: 1px 6px; font-size: 13px; }
 .chain, .signorder { list-style: none; margin: 8px 0 0; padding: 0; }
-.chain li { display: flex; gap: 10px; padding: 4px 0; color: #5b6472; }
+.signline .chain { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0; }
+.chain li { display: inline-flex; align-items: center; gap: 5px; color: #5b6472; white-space: nowrap; cursor: default; }
 .chain li.ok { color: #05603a; }
-.chain li.turn { color: #7a4b00; }
+.chain li.turn { color: #7a4b00; font-weight: 600; }
+.chain li + li::before { content: "›"; color: #b6bcc6; margin-right: 5px; font-weight: 400; }
 .step { flex: 0 0 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: #e4e7ec; color: #475467; }
+.chain .step { flex-basis: 17px; width: 17px; height: 17px; font-size: 10.5px; }
 .chain li.ok .step { background: #12b76a; color: #fff; }
 .chain li.turn .step { background: #f79009; color: #fff; }
-.chain .files { margin-top: 4px; }
-.myturn { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: #fff; border: 1px solid #f5d490; color: var(--text); }
+.myturn { margin-top: 5px; padding: 6px 10px; border-radius: 6px; background: #fff; border: 1px solid #f5d490; color: var(--text); font-size: 14px; }
+.myturn .muted { margin-left: 6px; }
 .myturn .files { align-items: center; }
 .signorder li { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px dashed var(--border); }
 .signorder .fname { flex: 1; min-width: 0; }
@@ -417,7 +430,7 @@ label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-si
 
 /* ---------- categorii: pagină mai lată pe ecranele mari ---------- */
 .page.wide { max-width: 1600px; }
-.page.wide .cats { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; }
+.page.wide .cats { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 18px; }
 
 /* ---------- setări + copie de rezervă: o singură pagină, fără derulare ---------- */
 .page.fit { height: calc(100vh - 58px); padding-bottom: 24px; display: flex; flex-direction: column; }
@@ -469,7 +482,7 @@ label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-si
   .brand > span { display: none; }
 }
 @media (max-width: 860px) {
-  .oc-scroll { max-height: none; }
+  .oc-scroll { height: auto; max-height: none; }
   .head-actions, .head-actions .search-sm { width: 100%; max-width: none; }
   .ol-children { margin-left: 8px; padding-left: 12px; }
   .org-toolbar .seg { flex: 1 1 auto; }
@@ -477,7 +490,7 @@ label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-si
 }
 @media print {
   .topbar, .org-toolbar, .org-admin, .oc-toggle, .page-head .btn { display: none !important; }
-  .oc-scroll { max-height: none; overflow: visible; background: none; border: 0; }
+  .oc-scroll { height: auto; max-height: none; overflow: visible; background: none; border: 0; }
   body { background: #fff; }
 }
 

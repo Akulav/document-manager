@@ -448,8 +448,6 @@ const DocForm = {
             <label class="field"><span>Data documentului *</span><input v-model="form.doc_date" type="date" required /></label>
             <label class="field"><span>Număr</span><input v-model="form.number" maxlength="60" placeholder="ex. 15-P" /></label>
           </div>
-          <label class="field"><span>Descriere</span><textarea v-model="form.description" rows="4" maxlength="5000"></textarea></label>
-
           <div class="section-title">Fișiere</div>
           <div class="drop" :class="{ over: dragging }" @dragover.prevent="dragging = true" @dragleave="dragLeave" @drop.prevent="drop">
             <input ref="files" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
@@ -648,19 +646,30 @@ async function moldsignPdf(blob, cert) {
   throw new Error('Timpul pentru semnare a expirat. Reîncercați.');
 }
 
-// Rezultatul verificării semnăturilor unui PDF, calculat pe server.
+// Rezultatul verificării semnăturilor din versiunea semnată (unul sau mai multe PDF-uri), calculat pe server.
+// Ultima versiune conține toate semnăturile aplicate până acum, deci o singură verificare le arată pe toate.
 const SIG_STATUS = { valid: 'Semnătură validă', warning: 'Validă, cu observații', invalid: 'Semnătură nevalidă' };
 const SignatureCheck = {
   components: { Modal },
-  props: { file: Object },
+  props: { files: Array },
   emits: ['close'],
-  data: () => ({ sigs: null, error: '' }),
+  data: () => ({ results: [] }),
   async mounted() {
-    try {
-      this.sigs = (await api('/api/files/' + this.file.id + '/signatures')).signatures;
-    } catch (e) {
-      this.error = e.message;
-    }
+    this.results = this.files.map((f) => ({ file: f, sigs: null, error: '' }));
+    await Promise.all(
+      this.results.map(async (r) => {
+        try {
+          r.sigs = (await api('/api/files/' + r.file.id + '/signatures')).signatures;
+        } catch (e) {
+          r.error = e.message;
+        }
+      })
+    );
+  },
+  computed: {
+    title() {
+      return this.files.length === 1 ? 'Semnături: ' + this.files[0].name : 'Verificarea semnăturilor';
+    },
   },
   methods: {
     label: (s) => SIG_STATUS[s.status],
@@ -668,20 +677,23 @@ const SignatureCheck = {
     day: (d) => (d ? new Date(d).toLocaleDateString('ro-RO') : ''),
   },
   template: /*html*/ `
-    <Modal :title="'Semnături: ' + file.name" wide ok-label="Închide" cancel-label="" @close="$emit('close')" @submit="$emit('close')">
-      <p v-if="error" class="warn">{{ error }}</p>
-      <p v-else-if="!sigs" class="muted">Se verifică…</p>
-      <p v-else-if="!sigs.length" class="muted">Fișierul nu conține semnături electronice.</p>
-      <div v-for="s in sigs || []" :key="s.index" class="sigcheck" :class="s.status">
-        <div class="sigcheck-head"><b>{{ s.index }}. {{ s.signer || 'Semnatar necunoscut' }}</b><span class="sigstatus">{{ label(s) }}</span></div>
-        <div class="small">
-          <span v-if="s.idnp">IDNP/cod: {{ s.idnp }} · </span><span v-if="s.organization">{{ s.organization }} · </span>
-          <span v-if="s.timestamp && s.timestamp.ok">marcă temporală {{ when(s.timestamp.time) }}</span>
-          <span v-else-if="s.signingTime">semnat la {{ when(s.signingTime) }} (ora calculatorului semnatarului)</span>
+    <Modal :title="title" wide ok-label="Închide" cancel-label="" @close="$emit('close')" @submit="$emit('close')">
+      <div v-for="r in results" :key="r.file.id" class="sigfile">
+        <div v-if="files.length > 1" class="section-title">{{ r.file.name }}</div>
+        <p v-if="r.error" class="warn">{{ r.error }}</p>
+        <p v-else-if="!r.sigs" class="muted">Se verifică…</p>
+        <p v-else-if="!r.sigs.length" class="muted">Fișierul nu conține semnături electronice.</p>
+        <div v-for="s in r.sigs || []" :key="s.index" class="sigcheck" :class="s.status">
+          <div class="sigcheck-head"><b>{{ s.index }}. {{ s.signer || 'Semnatar necunoscut' }}</b><span class="sigstatus">{{ label(s) }}</span></div>
+          <div class="small">
+            <span v-if="s.idnp">IDNP/cod: {{ s.idnp }} · </span><span v-if="s.organization">{{ s.organization }} · </span>
+            <span v-if="s.timestamp && s.timestamp.ok">marcă temporală {{ when(s.timestamp.time) }}</span>
+            <span v-else-if="s.signingTime">semnat la {{ when(s.signingTime) }} (ora calculatorului semnatarului)</span>
+          </div>
+          <div v-if="s.chain && s.chain.length" class="small muted">Certificat: {{ s.chain.join(' → ') }}<template v-if="s.validTo">, valabil până la {{ day(s.validTo) }}</template></div>
+          <ul v-if="s.problems.length" class="sigproblems"><li v-for="p in s.problems" :key="p">{{ p }}</li></ul>
+          <ul class="signotes small muted"><li v-for="n in s.notes" :key="n">{{ n }}</li></ul>
         </div>
-        <div v-if="s.chain && s.chain.length" class="small muted">Certificat: {{ s.chain.join(' → ') }}<template v-if="s.validTo">, valabil până la {{ day(s.validTo) }}</template></div>
-        <ul v-if="s.problems.length" class="sigproblems"><li v-for="p in s.problems" :key="p">{{ p }}</li></ul>
-        <ul class="signotes small muted"><li v-for="n in s.notes" :key="n">{{ n }}</li></ul>
       </div>
     </Modal>`,
 };
@@ -698,23 +710,25 @@ const DocCard = {
   computed: {
     store: () => store,
     tags: () => tagIndex(),
-    // versiuni semnate de persoane care nu mai figurează în lanț (date mai vechi): rămân vizibile
-    orphanSigned() {
-      const ids = new Set(this.doc.signers.map((s) => s.id));
-      return this.doc.files.filter((f) => f.signed_by_name && !ids.has(f.signed_by));
-    },
     pending() {
       return this.doc.signers.filter((s) => !s.signed_at).length;
     },
     originals() {
       return this.doc.files.filter((f) => !f.signed_by_name);
     },
-    // Versiunea care trebuie semnată acum: fișierele ultimului semnatar sau, dacă nu a semnat nimeni, originalele.
-    latest() {
+    // Ultima versiune semnată (se păstrează doar aceasta; documentele mai vechi pot avea și versiuni intermediare).
+    signedLatest() {
       const signed = this.doc.files.filter((f) => f.signed_by_name);
-      if (!signed.length) return this.originals;
+      if (!signed.length) return [];
       const last = signed[signed.length - 1];
       return signed.filter((f) => f.signed_by === last.signed_by && f.created_at === last.created_at);
+    },
+    signedPdfs() {
+      return this.signedLatest.filter((f) => isPdfName(f.name));
+    },
+    // Versiunea care trebuie semnată acum: ultima versiune semnată sau, dacă nu a semnat nimeni, originalele.
+    latest() {
+      return this.signedLatest.length ? this.signedLatest : this.originals;
     },
     // MoldSign semnează doar PDF-uri; pentru alte formate rămâne încărcarea manuală
     canToken() {
@@ -727,8 +741,10 @@ const DocCard = {
     docMon,
     visLabel,
     fmtDateTime,
-    signedFiles(userId) {
-      return this.doc.files.filter((f) => f.signed_by_name && f.signed_by === userId);
+    signerTitle(s) {
+      if (s.signed_at) return 'A semnat la ' + fmtDateTime(s.signed_at);
+      if (!s.active) return 'Cont dezactivat: lanțul de semnare este blocat';
+      return s.id === this.doc.signTurn ? 'Este la rând' : 'Așteaptă';
     },
     // serverul marchează documentul ca văzut când se deschide un fișier; reîmprospătăm lista puțin mai târziu
     opened() {
@@ -838,75 +854,60 @@ const DocCard = {
     <article class="card doc" :class="{ unseen: doc.unseen }">
       <div class="doc-date"><b>{{ docDay(doc) }}</b><span>{{ docMon(doc) }}</span></div>
       <div class="doc-body">
-        <div class="doc-title">
-          <span v-if="doc.unseen" class="badge new">Nou</span>
-          {{ doc.title }}<span v-if="doc.number" class="doc-nr">nr. {{ doc.number }}</span>
+        <div class="doc-line">
+          <div class="doc-title" :title="doc.title">
+            <span v-if="doc.unseen" class="badge new">Nou</span>
+            {{ doc.title }}<span v-if="doc.number" class="doc-nr">nr. {{ doc.number }}</span>
+          </div>
+          <div class="doc-meta">
+            <template v-for="id in doc.tagIds" :key="id">
+              <span v-if="tags.get(id)" class="chip" :style="chipStyle(tags.get(id).color)">{{ tags.get(id).name }}</span>
+            </template>
+            <span class="chip vis" :title="doc.author ? 'Adăugat de ' + doc.author : ''">{{ visLabel(doc) }}</span>
+          </div>
         </div>
-        <p v-if="doc.description" class="doc-desc">{{ doc.description }}</p>
-        <div v-if="originals.length" class="files">
+        <div v-if="originals.length || signedLatest.length" class="files">
           <FileLink v-for="f in originals" :key="f.id" :file="f" @open="opened" />
+          <template v-if="signedLatest.length">
+            <span class="files-sep" :title="'Ultima versiune semnată, încărcată de ' + signedLatest[0].signed_by_name">semnat:</span>
+            <FileLink v-for="f in signedLatest" :key="f.id" :file="f" @open="opened" />
+          </template>
         </div>
 
-        <div v-if="doc.signers.length" class="signbox" :class="{ done: !pending }">
-          <div class="sign-head">
-            <b>{{ pending ? 'În curs de semnare' : 'Semnat de toți' }}</b>
-            <span class="small">{{ doc.signers.length - pending }} din {{ doc.signers.length }}</span>
-            <button v-if="doc.canEdit && pending && store.me.mailEnabled" class="btn link" :disabled="reminding" @click="remind">Retrimite e-mail</button>
-          </div>
+        <div v-if="doc.signers.length" class="signline" :class="{ done: !pending }">
+          <span class="sign-state">{{ pending ? 'Semnare' : 'Semnat' }} {{ doc.signers.length - pending }}/{{ doc.signers.length }}</span>
           <ol class="chain">
-            <li v-for="f in orphanSigned" :key="'o' + f.id" class="ok">
-              <span class="step">✓</span>
-              <div>
-                <b>{{ f.signed_by_name }}</b><span class="small"> — a semnat (cont șters)</span>
-                <div class="files"><FileLink :file="f" @open="opened" /><button v-if="isPdfName(f.name)" class="btn link sm" @click="verifying = f">Verifică semnătura</button></div>
-              </div>
-            </li>
-            <li v-for="(s, i) in doc.signers" :key="s.id" :class="{ ok: s.signed_at, turn: s.id === doc.signTurn }">
-              <span class="step">{{ s.signed_at ? '✓' : i + 1 }}</span>
-              <div>
-                <b>{{ s.name }}</b>
-                <span class="small"> — {{ s.signed_at ? 'a semnat la ' + fmtDateTime(s.signed_at) : s.id === doc.signTurn ? 'este la rând' : 'așteaptă' }}</span>
-                <span v-if="!s.active && !s.signed_at" class="warn small"> · cont dezactivat, lanțul este blocat</span>
-                <div v-if="signedFiles(s.id).length" class="files">
-                  <template v-for="f in signedFiles(s.id)" :key="f.id">
-                    <FileLink :file="f" @open="opened" />
-                    <button v-if="isPdfName(f.name)" class="btn link sm" @click="verifying = f">Verifică semnătura</button>
-                  </template>
-                </div>
-              </div>
+            <li v-for="(s, i) in doc.signers" :key="s.id" :class="{ ok: s.signed_at, turn: s.id === doc.signTurn, blocked: !s.active && !s.signed_at }" :title="signerTitle(s)">
+              <span class="step">{{ s.signed_at ? '✓' : i + 1 }}</span>{{ s.name }}<span v-if="!s.active && !s.signed_at" class="warn"> ⚠</span>
             </li>
           </ol>
-          <div v-if="doc.mySign === 'pending'" class="myturn">
-            <div v-if="canToken"><b>Este rândul dvs. să semnați.</b> Semnați cu tokenul prin MoldSign sau, dacă ați semnat în altă aplicație, încărcați fișierul semnat.</div>
-            <div v-else><b>Este rândul dvs. să semnați.</b> Descărcați versiunea curentă, semnați-o digital, apoi încărcați fișierul semnat.</div>
-            <div class="files">
-              <FileLink v-for="f in latest" :key="f.id" :file="f" @open="opened" />
-              <input ref="signed" type="file" multiple hidden @change="uploadSigned" />
-              <button v-if="canToken" class="btn primary sm" :disabled="busy" @click="signWithToken">{{ signing || 'Semnează cu MoldSign' }}</button>
-              <button class="btn sm" :class="{ primary: !canToken }" :disabled="busy" @click="$refs.signed.click()">{{ busy && !signing ? 'Se încarcă…' : 'Încarcă documentul semnat' }}</button>
-            </div>
+          <span class="sign-tools">
+            <button v-if="signedPdfs.length" class="btn link sm" @click="verifying = signedPdfs">Verifică semnăturile</button>
+            <button v-if="doc.canEdit && pending && store.me.mailEnabled" class="btn link sm" :disabled="reminding" @click="remind">Retrimite e-mail</button>
+          </span>
+        </div>
+        <div v-if="doc.mySign === 'pending'" class="myturn">
+          <b>Este rândul dvs. să semnați.</b>
+          <span class="muted small">{{ canToken ? 'Semnați cu tokenul prin MoldSign sau încărcați fișierul semnat în altă aplicație.' : 'Descărcați versiunea curentă, semnați-o digital, apoi încărcați fișierul semnat.' }}</span>
+          <div class="files">
+            <FileLink v-for="f in latest" :key="f.id" :file="f" @open="opened" />
+            <input ref="signed" type="file" multiple hidden @change="uploadSigned" />
+            <button v-if="canToken" class="btn primary sm" :disabled="busy" @click="signWithToken">{{ signing || 'Semnează cu MoldSign' }}</button>
+            <button class="btn sm" :class="{ primary: !canToken }" :disabled="busy" @click="$refs.signed.click()">{{ busy && !signing ? 'Se încarcă…' : 'Încarcă documentul semnat' }}</button>
           </div>
-          <Modal v-if="certPick" title="Semnare cu MoldSign" ok-label="Semnează" @close="pickCert(false)" @submit="pickCert(true)">
-            <p class="dialog-msg">„{{ certPick.names }}” va fi semnat electronic. După ce apăsați „Semnează”, MoldSign vă cere codul PIN al tokenului.</p>
-            <div class="section-title">Certificatul de semnare</div>
-            <label v-for="(c, i) in certPick.certs" :key="i" class="check certopt">
-              <input type="radio" name="cert" :value="i" v-model="certPick.chosen" />
-              <span><b>{{ certLabel(c) }}</b><span class="muted small"><template v-if="certIssuer(c)"> · emis de {{ certIssuer(c) }}</template></span></span>
-            </label>
-          </Modal>
-          <SignatureCheck v-if="verifying" :file="verifying" @close="verifying = null" />
         </div>
-
-        <div class="doc-meta">
-          <template v-for="id in doc.tagIds" :key="id">
-            <span v-if="tags.get(id)" class="chip" :style="chipStyle(tags.get(id).color)">{{ tags.get(id).name }}</span>
-          </template>
-          <span class="chip vis">{{ visLabel(doc) }}</span>
-          <span v-if="doc.author" class="muted small">adăugat de {{ doc.author }}</span>
-        </div>
+        <Modal v-if="certPick" title="Semnare cu MoldSign" ok-label="Semnează" @close="pickCert(false)" @submit="pickCert(true)">
+          <p class="dialog-msg">„{{ certPick.names }}” va fi semnat electronic. După ce apăsați „Semnează”, MoldSign vă cere codul PIN al tokenului.</p>
+          <div class="section-title">Certificatul de semnare</div>
+          <label v-for="(c, i) in certPick.certs" :key="i" class="check certopt">
+            <input type="radio" name="cert" :value="i" v-model="certPick.chosen" />
+            <span><b>{{ certLabel(c) }}</b><span class="muted small"><template v-if="certIssuer(c)"> · emis de {{ certIssuer(c) }}</template></span></span>
+          </label>
+        </Modal>
+        <SignatureCheck v-if="verifying" :files="verifying" @close="verifying = null" />
       </div>
       <div v-if="doc.canEdit || doc.unseen" class="doc-actions">
-        <button v-if="doc.unseen" class="btn link" @click="markSeen">Marchează ca văzut</button>
+        <button v-if="doc.unseen" class="btn link" @click="markSeen">Văzut</button>
         <button v-if="doc.canEdit" class="btn link" @click="$emit('edit', doc)">Modifică</button>
         <button v-if="doc.canDelete" class="btn link danger" @click="remove">Șterge</button>
       </div>
@@ -945,7 +946,7 @@ const DocsView = {
         if (this.sel.type === 'tag' && !d.tagIds.includes(this.sel.id)) return false;
         if (this.sel.type === 'cat' && !d.tagIds.some((id) => (this.tags.get(id) || {}).category_id === this.sel.id)) return false;
         if (!q) return true;
-        const hay = [d.title, d.number, d.description, ...d.files.map((f) => f.name), ...d.tagIds.map((id) => (this.tags.get(id) || {}).name)];
+        const hay = [d.title, d.number, ...d.files.map((f) => f.name), ...d.tagIds.map((id) => (this.tags.get(id) || {}).name)];
         return hay.join(' ').toLowerCase().includes(q);
       });
     },
@@ -979,17 +980,17 @@ const DocsView = {
         </button>
         <template v-for="c in store.categories" :key="c.id">
           <button class="side-item side-cat" :class="{ on: isSel('cat', c.id) }" @click="sel = { type: 'cat', id: c.id }">
-            <span><i class="dot" :style="{ background: c.color }"></i>{{ c.name }}</span><span class="count">{{ counts.cat[c.id] || 0 }}</span>
+            <span :title="c.name"><i class="dot" :style="{ background: c.color }"></i>{{ c.name }}</span><span class="count">{{ counts.cat[c.id] || 0 }}</span>
           </button>
           <button v-for="t in c.tags" :key="t.id" class="side-item side-tag" :class="{ on: isSel('tag', t.id) }" @click="sel = { type: 'tag', id: t.id }">
-            <span>{{ t.name }}</span><span class="count">{{ counts.tag[t.id] || 0 }}</span>
+            <span :title="t.name">{{ t.name }}</span><span class="count">{{ counts.tag[t.id] || 0 }}</span>
           </button>
         </template>
       </aside>
 
       <section>
         <div class="toolbar">
-          <input v-model="q" type="search" placeholder="Caută după denumire, număr, descriere, fișier…" />
+          <input v-model="q" type="search" placeholder="Caută după denumire, număr, fișier, etichetă…" />
           <select v-model="year" aria-label="Anul">
             <option value="">Toți anii</option>
             <option v-for="y in years" :key="y">{{ y }}</option>
@@ -1503,6 +1504,8 @@ const writePref = (k, v) => {
 const orgUi = reactive({
   mode: readPref('org.mode', 'chart'),
   zoom: Number(readPref('org.zoom', '1')) || 1,
+  // „Potrivește”: schema se micșorează automat ca să încapă întreagă în fereastră
+  fit: readPref('org.fit', '1') === '1',
   collapsed: new Set(),
   morePeople: new Set(),
   focus: null,
@@ -1723,10 +1726,25 @@ const OrgView = {
     },
     'ui.zoom'(v) {
       writePref('org.zoom', String(v));
+      // după micșorare pot dispărea barele de derulare: încă o potrivire, cu spațiul eliberat
+      if (orgUi.fit) requestAnimationFrame(() => this.fitChart());
+    },
+    'ui.fit'(v) {
+      writePref('org.fit', v ? '1' : '0');
+      if (v) this.fitChart();
     },
   },
   mounted() {
+    // schema se repotrivește când se schimbă fereastra sau când se extind/restrâng ramuri
+    this.resizeObs = new ResizeObserver(() => this.fitChart());
+    this.observeChart();
     this.$nextTick(this.center);
+  },
+  updated() {
+    this.observeChart();
+  },
+  beforeUnmount() {
+    this.resizeObs.disconnect();
   },
   methods: {
     plural,
@@ -1741,7 +1759,41 @@ const OrgView = {
       return !!this.query && (this.matches(u.name + ' ' + u.type) || peopleOf(u.id).some(this.personHit));
     },
     setZoom(step) {
-      orgUi.zoom = step ? Math.min(1.5, Math.max(0.4, Math.round((orgUi.zoom + step) * 10) / 10)) : 1;
+      orgUi.fit = false;
+      orgUi.zoom = step ? Math.min(1.5, Math.max(0.2, Math.round((orgUi.zoom + step) * 10) / 10)) : 1;
+    },
+    observeChart() {
+      const el = this.$refs.scroll;
+      const root = this.$refs.root;
+      if (el === this.observed?.[0] && root === this.observed?.[1]) return;
+      this.resizeObs.disconnect();
+      if (el && root) {
+        this.resizeObs.observe(el);
+        this.resizeObs.observe(root);
+        this.fitChart();
+      }
+      this.observed = [el, root];
+    },
+    // Calculează mărirea la care schema încape întreagă (lățime și înălțime) în chenar.
+    fitChart() {
+      if (!orgUi.fit || orgUi.mode !== 'chart') return;
+      const el = this.$refs.scroll;
+      const root = this.$refs.root;
+      if (!el || !root) return;
+      const box = root.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      const availW = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const availH = el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+      if (!box.width || availW <= 0 || availH <= 0) return;
+      // mărirea aplicată efectiv în pagină (starea poate fi deja schimbată, dar încă nedesenată)
+      const applied = parseFloat(this.$refs.canvas.style.zoom) || 1;
+      const w = box.width / applied;
+      const h = box.height / applied;
+      // pe ecrane înguste chenarul crește după conținut: potrivim doar lățimea
+      const tall = getComputedStyle(el).maxHeight === 'none';
+      const z = Math.min(1, availW / w, tall ? Infinity : availH / h);
+      const next = Math.max(0.2, Math.floor(z * 100) / 100);
+      if (Math.abs(next - orgUi.zoom) >= 0.01) orgUi.zoom = next;
     },
     expandAll() {
       orgUi.collapsed.clear();
@@ -1833,7 +1885,8 @@ const OrgView = {
         <button type="button" @click="collapseAll" title="Arată doar primele niveluri">Restrânge</button>
       </div>
       <div v-if="ui.mode === 'chart'" class="seg zoom" role="group" aria-label="Mărire">
-        <button type="button" @click="setZoom(-0.1)" :disabled="ui.zoom <= 0.4" aria-label="Micșorează">−</button>
+        <button type="button" :class="{ on: ui.fit }" @click="ui.fit = true; fitChart()" title="Micșorează schema ca să încapă întreagă pe ecran">Potrivește</button>
+        <button type="button" @click="setZoom(-0.1)" :disabled="ui.zoom <= 0.2" aria-label="Micșorează">−</button>
         <button type="button" class="zoom-val" @click="setZoom(0)" title="Mărime normală">{{ zoomPct }}</button>
         <button type="button" @click="setZoom(0.1)" :disabled="ui.zoom >= 1.5" aria-label="Mărește">+</button>
       </div>
@@ -1868,8 +1921,8 @@ const OrgView = {
     </div>
 
     <div v-else-if="ui.mode === 'chart'" ref="scroll" class="oc-scroll card" @mousedown="pan">
-      <div class="oc-canvas" :style="{ zoom: ui.zoom }">
-        <ul class="oc-level oc-root">
+      <div ref="canvas" class="oc-canvas" :style="{ zoom: ui.zoom }">
+        <ul ref="root" class="oc-level oc-root">
           <OrgChartNode v-for="u in roots" :key="u.id" :unit="u" :depth="0" />
         </ul>
       </div>
@@ -1907,7 +1960,7 @@ const OrgView = {
 
 // ---------- categorii și etichete ----------
 const CategoriesView = {
-  components: { Modal },
+  components: { Modal, Icon },
   data: () => ({ catForm: null, newTag: {}, busy: false }),
   computed: { store: () => store },
   methods: {
@@ -1963,13 +2016,14 @@ const CategoriesView = {
     <div class="cats">
       <div v-for="c in store.categories" :key="c.id" class="card cat" :style="{ borderTopColor: c.color }">
         <div class="cat-head">
-          <h2>{{ c.name }}</h2>
-          <button class="btn link" @click="catForm = { id: c.id, name: c.name, color: c.color, sort: c.sort }">Modifică</button>
-          <button class="btn link danger" @click="removeCat(c)">Șterge</button>
+          <h2 :title="c.name">{{ c.name }}</h2>
+          <button class="icon-btn" title="Modifică categoria" @click="catForm = { id: c.id, name: c.name, color: c.color, sort: c.sort }"><Icon name="edit" /></button>
+          <button class="icon-btn danger" title="Șterge categoria" @click="removeCat(c)"><Icon name="trash" /></button>
         </div>
         <div v-for="t in c.tags" :key="t.id" class="tagrow">
-          <span>{{ t.name }}</span>
-          <span><button class="btn link" @click="renameTag(t)">Redenumește</button><button class="btn link danger" @click="removeTag(t)">Șterge</button></span>
+          <span class="tagname" :title="t.name">{{ t.name }}</span>
+          <button class="icon-btn" title="Redenumește eticheta" @click="renameTag(t)"><Icon name="edit" /></button>
+          <button class="icon-btn danger" title="Șterge eticheta" @click="removeTag(t)"><Icon name="trash" /></button>
         </div>
         <div v-if="!c.tags.length" class="muted small">Nicio etichetă încă.</div>
         <form class="addrow" @submit.prevent="addTag(c)">
@@ -2166,7 +2220,7 @@ const App = {
       return item ? item[2] : 'DocsView';
     },
     pageClass() {
-      return { wide: this.view === 'CategoriesView', fit: this.view === 'SettingsView' };
+      return { wide: this.view === 'CategoriesView', full: this.view === 'OrgView', fit: this.view === 'SettingsView' };
     },
     inboxLabel() {
       return this.inbox ? 'Notificări: ' + this.inbox + (this.inbox === 1 ? ' nouă' : ' noi') : 'Notificări: nicio notificare nouă';
