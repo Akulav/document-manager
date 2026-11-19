@@ -2314,11 +2314,11 @@ const PeopleView = {
         <thead>
           <tr>
             <th>Angajat</th><th>Subdiviziunea</th><th>Telefon</th><th>E-mail</th>
-            <template v-if="admin"><th>Cont</th><th>Rol</th><th>Stare</th><th></th></template>
+            <template v-if="admin"><th>Cont</th><th>Rol</th><th></th></template>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="u in shown" :key="u.id" :class="{ off: admin && !u.active }">
+          <tr v-for="u in shown" :key="u.id" :class="{ off: admin && !u.active }" :title="admin && !u.active ? 'Cont dezactivat' : null">
             <td>
               <span class="who">
                 <span class="avatar sm" :style="avatarStyle(u.full_name)">{{ initials(u.full_name) }}</span>
@@ -2335,14 +2335,13 @@ const PeopleView = {
             <template v-if="admin">
               <td><code class="uname">{{ u.username }}</code></td>
               <td><span class="badge" :class="{ gray: u.role === 'user', dark: u.role === 'admin' }">{{ role(u.role) }}</span></td>
-              <td><span class="status" :class="{ on: u.active }">{{ u.active ? (u.must_change ? 'Activ · parolă de schimbat' : 'Activ') : 'Dezactivat' }}</span></td>
               <td class="row-actions">
                 <button class="icon-btn" title="Modifică" aria-label="Modifică" @click="editing = u"><Icon name="edit" /></button>
                 <button v-if="u.id !== store.me.id" class="icon-btn danger" title="Șterge contul" aria-label="Șterge contul" @click="remove(u)"><Icon name="trash" /></button>
               </td>
             </template>
           </tr>
-          <tr v-if="loaded && !shown.length"><td :colspan="admin ? 8 : 4" class="empty-row">{{ people.length ? 'Niciun angajat nu corespunde căutării.' : 'Nu există angajați.' }}</td></tr>
+          <tr v-if="loaded && !shown.length"><td :colspan="admin ? 7 : 4" class="empty-row">{{ people.length ? 'Niciun angajat nu corespunde căutării.' : 'Nu există angajați.' }}</td></tr>
         </tbody>
       </table>
     </div>

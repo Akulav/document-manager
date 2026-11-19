@@ -12,7 +12,19 @@ const pdfsig = require('./pdfsig');
 const PORT = Number(process.env.PORT) || 3080;
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_FILE = 50 * 1024 * 1024;
-const SESSION_MS = 12 * 3600 * 1000; // o zi de lucru; după aceea se cere din nou autentificarea
+// Sesiunea expiră după 30 de zile fără activitate; fiecare folosire o prelungește (cel mult o dată pe oră,
+// ca baza de date să nu fie scrisă la fiecare cerere). Ieșirea, schimbarea parolei sau dezactivarea contului o închid imediat.
+const SESSION_MS = 30 * 24 * 3600 * 1000;
+const SESSION_RENEW_MS = 3600 * 1000;
+function setSessionCookie(req, reply, token) {
+  reply.setCookie('sid', token, {
+    path: '/',
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: isHttps(req),
+    maxAge: SESSION_MS / 1000,
+  });
+}
 const ROLES = ['admin', 'editor', 'user'];
 
 // Antetele X-Forwarded-* sunt crezute doar dacă vin de la un proxy de pe aceeași mașină (cazul obișnuit).
@@ -123,27 +135,33 @@ function audit(req, action, details = '', username) {
   }
 }
 
-async function requireUser(req) {
+async function requireUser(req, reply) {
   const sid = req.cookies.sid;
   const user = sid
     ? db
         .prepare(
-          `SELECT u.id, u.username, u.full_name, u.position, u.email, u.unit_id, u.role, u.must_change, u.created_at
+          `SELECT u.id, u.username, u.full_name, u.position, u.email, u.unit_id, u.role, u.must_change, u.created_at, s.expires_at
            FROM sessions s JOIN users u ON u.id = s.user_id
            WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1`
         )
         .get(sha(sid), Date.now())
     : null;
   if (!user) throw fail(401, 'Este necesară autentificarea.');
+  const { expires_at, ...me } = user;
+  // prelungirea sesiunii: utilizatorul activ nu mai este deconectat
+  if (reply && expires_at - Date.now() < SESSION_MS - SESSION_RENEW_MS) {
+    db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(Date.now() + SESSION_MS, sha(sid));
+    setSessionCookie(req, reply, sid);
+  }
   if (user.must_change && !req.routeOptions.config.allowMustChange) throw fail(403, 'Schimbați mai întâi parola.');
-  req.user = user;
+  req.user = me;
 }
-async function requireAdmin(req) {
-  await requireUser(req);
+async function requireAdmin(req, reply) {
+  await requireUser(req, reply);
   if (req.user.role !== 'admin') throw fail(403, 'Acțiune permisă doar administratorilor.');
 }
-async function requireEditor(req) {
-  await requireUser(req);
+async function requireEditor(req, reply) {
+  await requireUser(req, reply);
   if (req.user.role === 'user') throw fail(403, 'Nu aveți dreptul de a adăuga documente.');
 }
 
@@ -493,13 +511,7 @@ app.register(async (app) => {
     db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
     const token = crypto.randomBytes(32).toString('hex');
     db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(sha(token), user.id, Date.now() + SESSION_MS);
-    reply.setCookie('sid', token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'strict',
-      secure: isHttps(req),
-      maxAge: SESSION_MS / 1000,
-    });
+    setSessionCookie(req, reply, token);
     return { ok: true };
   });
 
