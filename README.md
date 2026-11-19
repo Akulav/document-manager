@@ -33,6 +33,8 @@ O aplicație web pentru rețeaua internă. Fără telemetrie. Fără CDN. Fără
 - **Vizibilitate** pentru toți angajații sau doar pentru subdiviziunile și persoanele selectate (o subdiviziune include
   și subdiviziunile din subordinea ei). Autorul și administratorii văd documentul întotdeauna.
 - **Notificări**: pictograma cutiei poștale arată documentele nevăzute și cele care așteaptă semnătura.
+- **Avizare**: până la un termen, cei care văd documentul îl deschid și îl modifică direct în pagină (editorul
+  ONLYOFFICE); la documentele Word modificările lor apar ca propuneri, iar autorul le acceptă sau le respinge.
 
 </td>
 <td width="50%" valign="top">
@@ -95,6 +97,42 @@ npm install
 
 Apoi reporniți serverul. Datele din `data/` (inclusiv setările SMTP, păstrate în baza de date) rămân neschimbate.
 
+## 📝 Avizare și editorul de documente
+
+Fișierele se deschid și se modifică direct în pagină prin **ONLYOFFICE Docs** (ediția Community, gratuită, licență
+AGPL), instalat separat în rețeaua internă. Fără el, aplicația funcționează normal, doar fără butoanele de editare.
+
+**Instalare** (Docker, ~4 GB RAM; ediția gratuită permite 20 de persoane în editor simultan):
+
+```bash
+docker run -d --name onlyoffice --restart=always -p 8080:80   -e JWT_SECRET=o-cheie-lunga-si-aleatorie   -e ALLOW_PRIVATE_IP_ADDRESS=true   onlyoffice/documentserver
+```
+
+`ALLOW_PRIVATE_IP_ADDRESS` îi permite serverului de documente să descarce fișierele de la aplicație, aflată tot în
+rețeaua internă. Apoi, în **Setări → Editor de documente**:
+
+| Câmp | Ce se completează |
+| :-- | :-- |
+| Adresa serverului de documente | adresa la care browserele ajung la ONLYOFFICE, ex. `http://docs.ansc.local:8080` |
+| Cheia secretă (JWT) | aceeași valoare ca `JWT_SECRET` de mai sus |
+| Adresa aplicației pentru serverul de documente | doar dacă ONLYOFFICE nu ajunge la aplicație prin „Adresa aplicației”, ex. `http://10.0.0.5:3080` (în Docker, `localhost` nu este calculatorul gazdă) |
+
+Dacă aplicația este servită prin HTTPS, și ONLYOFFICE trebuie servit prin HTTPS (browserul blochează un editor HTTP
+într-o pagină HTTPS).
+
+**Cum funcționează:**
+
+- La adăugarea documentului, autorul activează „Avizare” și alege termenul. Până la acel termen (inclusiv), oricine
+  vede documentul îl poate deschide cu **Avizează**: la Word modificările apar ca propuneri urmărite, plus comentarii;
+  foile de calcul și prezentările se modifică direct. După termen, documentul este doar pentru citire.
+- **O singură persoană editează un fișier la un moment dat.** Cine îl deschide primul îl poate modifica; ceilalți îl
+  văd doar pentru citire („Maria Rusu lucrează acum la acest fișier”) și primesc butonul „Deschide pentru editare”
+  când se eliberează. Blocarea se eliberează la închiderea editorului sau după 3 minute fără semnal de la pagină.
+- Autorul (și administratorii) pot edita oricând. Versiunile semnate și documentele care au deja semnături nu se mai
+  modifică. Formatele vechi (`.doc`, `.xls`, `.ppt`) se deschid doar pentru citire.
+- Fiecare salvare creează o **versiune nouă**; versiunile anterioare rămân descărcabile (pictograma de istoric de lângă
+  fișier) și sunt incluse în backup.
+
 ## 📁 Unde sunt datele
 
 Totul este în folderul `data/` al aplicației (sau în `DATA_DIR`):
@@ -102,9 +140,10 @@ Totul este în folderul `data/` al aplicației (sau în `DATA_DIR`):
 | Cale | Conținut |
 | :-- | :-- |
 | `data/ansc.db` | baza de date SQLite (utilizatori, organigramă, etichete, documente, semnături, setări SMTP) |
-| `data/uploads/` | fișierele încărcate, sub nume aleatorii (numele original este în baza de date); nu sunt criptate pe disc |
+| `data/uploads/` | fișierele încărcate și versiunile lor anterioare, sub nume aleatorii (numele original este în baza de date); nu sunt criptate pe disc |
 
-Aplicația nu folosește fișier `.env`. Setările SMTP nu sunt incluse în exportul de backup, fiind specifice serverului.
+Aplicația nu folosește fișier `.env`. Setările SMTP și ale editorului de documente nu sunt incluse în exportul de
+backup, fiind specifice serverului.
 
 | Variabilă | Implicit | Rol |
 | :-- | :-- | :-- |
@@ -115,11 +154,12 @@ Aplicația nu folosește fișier `.env`. Setările SMTP nu sunt incluse în expo
 
 ## 🔐 Securitate
 
-Făcut în aplicație: parole scrypt (minimum 10 caractere), sesiuni de 12 ore în cookie `HttpOnly` + `SameSite=Strict`,
+Făcut în aplicație: parole scrypt (minimum 10 caractere), sesiuni de 30 de zile (prelungite la folosire) în cookie `HttpOnly` + `SameSite=Strict`,
 verificarea originii la cererile care modifică date, antete CSP / HSTS / anti-clickjacking / COOP, blocare temporară
 după încercări eșuate de autentificare și de schimbare a parolei, jurnal de audit, verificarea accesului la fiecare
 fișier descărcat, refuzul încărcărilor neautorizate înainte de a scrie pe disc, limită de o retrimitere a e-mailului
-de semnare la 5 minute. Datele contului dispar din pagină imediat la ieșire sau la expirarea sesiunii.
+de semnare la 5 minute. Datele contului dispar din pagină imediat la ieșire sau la expirarea sesiunii. Schimbul cu
+editorul de documente este semnat (JWT): configurația, linkurile temporare spre fișiere și salvările.
 
 De asigurat la instalare:
 
@@ -140,6 +180,7 @@ De asigurat la instalare:
 - `src/server.js`: serverul Fastify și toate rutele `/api`.
 - `src/backup.js`: exportul și importul complet.
 - `src/mail.js`: e-mailurile de semnare (nodemailer).
+- `src/office.js`: legătura cu ONLYOFFICE (JWT, tipuri de fișiere, blocarea de editare).
 - `public/`: interfața (Vue 3 fără pas de build, servit local, fără CDN) și pictogramele (`favicon.svg`,
   `favicon.ico`, `apple-touch-icon.png`, `icon-512.png`, listate în `manifest.webmanifest`).
 - `scripts/make-icons.js`: regenerează pictogramele (`node scripts/make-icons.js`), fără dependențe.

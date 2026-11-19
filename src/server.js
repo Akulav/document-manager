@@ -3,11 +3,13 @@ const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
+const { Readable, Transform } = require('node:stream');
 const Fastify = require('fastify');
 const { db, tx, hashPassword, checkPassword, UPLOAD_DIR, DATA_DIR, INITIAL_PASSWORD_FILE } = require('./db');
 const mail = require('./mail');
 const backup = require('./backup');
 const pdfsig = require('./pdfsig');
+const office = require('./office');
 
 const PORT = Number(process.env.PORT) || 3080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -91,6 +93,15 @@ const canDelete = (user, doc, signers) => user.role === 'admin' || (canEdit(user
 function removeStored(names) {
   for (const n of names) fs.rm(path.join(UPLOAD_DIR, n), { force: true }, () => {});
 }
+const versionsStored = (fileId) => db.prepare('SELECT stored FROM file_versions WHERE file_id = ?').all(fileId).map((v) => v.stored);
+
+// data de azi după ceasul local al serverului (același fus orar cu utilizatorii)
+function localToday() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+// Avizarea este deschisă până la sfârșitul zilei-termen, inclusiv.
+const reviewOpen = (doc) => !!doc.review_until && doc.review_until >= localToday();
 
 // ---------- autentificare ----------
 // Încercările eșuate se numără pe (IP + utilizator) și pe IP; după prag urmează o pauză de 10 minute.
@@ -256,6 +267,7 @@ function readDoc(data, docId = null) {
     visibility,
     number: str(data.number, 60),
     description: str(data.description, 5000),
+    review_until: data.review_until && validDate(str(data.review_until, 10)) ? str(data.review_until, 10) : '',
     tagIds: exists('tags', idList(data.tagIds)),
     unitIds: visibility === 'restricted' ? exists('units', idList(data.unitIds)) : [],
     userIds: visibility === 'restricted' ? exists('users', idList(data.userIds)) : [],
@@ -386,7 +398,7 @@ function listDocuments(user) {
   const acc = accessClause(user);
   const rows = db
     .prepare(
-      `SELECT d.id, d.title, d.number, d.doc_date, d.description, d.visibility, d.created_by, d.created_at,
+      `SELECT d.id, d.title, d.number, d.doc_date, d.description, d.visibility, d.review_until, d.created_by, d.created_at,
               a.full_name AS author,
               EXISTS (SELECT 1 FROM document_seen s WHERE s.document_id = d.id AND s.user_id = ?) AS seen
        FROM documents d LEFT JOIN users a ON a.id = d.created_by
@@ -404,7 +416,7 @@ function listDocuments(user) {
   const tags = byDocument(db.prepare('SELECT document_id, tag_id FROM document_tags').all(), (r) => r.tag_id);
   const units = byDocument(db.prepare('SELECT document_id, unit_id FROM document_units').all(), (r) => r.unit_id);
   const users = byDocument(db.prepare('SELECT document_id, user_id FROM document_users').all(), (r) => r.user_id);
-  const files = byDocument(db.prepare('SELECT document_id, id, name, size, signed_by, signed_by_name, created_at FROM document_files ORDER BY id').all());
+  const files = byDocument(db.prepare('SELECT document_id, id, name, size, signed_by, signed_by_name, created_at, version, edited_by_name, edited_at FROM document_files ORDER BY id').all());
   return rows.map(({ seen, ...d }) => {
     const sig = signers.get(d.id) || [];
     const mine = sig.find((s) => s.id === user.id);
@@ -423,6 +435,7 @@ function listDocuments(user) {
       userIds: users.get(d.id) || [],
       files: files.get(d.id) || [],
       canEdit: canEdit(user, d),
+      reviewOpen: reviewOpen(d),
     };
   });
 }
@@ -459,7 +472,9 @@ app.addHook('onRequest', async (req) => {
 // cu tokenul: browserul nu mai contactează MoldSign direct, ci agentul FleetView de pe calculator.
 const SIGN_BRIDGE_ORIGIN = 'http://127.0.0.1:48625';
 const SIGN_BRIDGE_URL = SIGN_BRIDGE_ORIGIN;
-const CSP = `default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ${SIGN_BRIDGE_ORIGIN}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`;
+// Când editorul de documente este configurat, scriptul și cadrul (iframe) lui vin de pe serverul ONLYOFFICE.
+const csp = (o = office.officeOrigin()) =>
+  `default-src 'self'; script-src 'self' 'unsafe-eval'${o ? ' ' + o : ''}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ${SIGN_BRIDGE_ORIGIN}; frame-src ${o || "'none'"}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`;
 app.addHook('onSend', async (req, reply) => {
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('X-Frame-Options', 'DENY');
@@ -470,7 +485,7 @@ app.addHook('onSend', async (req, reply) => {
   if (isHttps(req)) reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   if (req.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
   // fișierele descărcate nu primesc CSP-ul aplicației: vizualizatorul PDF al browserului are nevoie de propriile resurse
-  if (!req.url.startsWith('/api/files/')) reply.header('Content-Security-Policy', CSP);
+  if (!req.url.startsWith('/api/files/')) reply.header('Content-Security-Policy', csp());
 });
 
 app.setErrorHandler((err, req, reply) => {
@@ -521,7 +536,7 @@ app.register(async (app) => {
     return { ok: true };
   });
 
-  app.get('/api/me', { preHandler: requireUser, config: { allowMustChange: true } }, async (req) => ({ ...req.user, mailEnabled: mail.enabled() }));
+  app.get('/api/me', { preHandler: requireUser, config: { allowMustChange: true } }, async (req) => ({ ...req.user, mailEnabled: mail.enabled(), office: office.enabled() }));
 
   app.post('/api/password', { preHandler: requireUser, config: { allowMustChange: true } }, async (req) => {
     // o sesiune lăsată deschisă nu trebuie să permită ghicirea parolei la nesfârșit
@@ -796,8 +811,8 @@ app.register(async (app) => {
     try {
       const id = tx(() => {
         const r = db
-          .prepare('INSERT INTO documents (title, number, doc_date, description, visibility, created_by) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, req.user.id);
+          .prepare('INSERT INTO documents (title, number, doc_date, description, visibility, review_until, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, req.user.id);
         saveDocLinks(lastId(r), doc, saved);
         return lastId(r);
       });
@@ -821,8 +836,8 @@ app.register(async (app) => {
     const turnBefore = currentSigner(id);
     try {
       tx(() => {
-        db.prepare("UPDATE documents SET title = ?, number = ?, doc_date = ?, description = ?, visibility = ?, updated_at = datetime('now') WHERE id = ?").run(
-          doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, id
+        db.prepare("UPDATE documents SET title = ?, number = ?, doc_date = ?, description = ?, visibility = ?, review_until = ?, updated_at = datetime('now') WHERE id = ?").run(
+          doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, id
         );
         // versiunile semnate fac parte din lanțul de semnare și nu pot fi eliminate la editare
         const q = db.prepare('SELECT stored FROM document_files WHERE id = ? AND document_id = ? AND signed_by_name IS NULL');
@@ -830,7 +845,7 @@ app.register(async (app) => {
         for (const fid of doc.removeFileIds) {
           const f = q.get(fid, id);
           if (f) {
-            removed.push(f.stored);
+            removed.push(f.stored, ...versionsStored(fid));
             del.run(fid, id);
           }
         }
@@ -945,7 +960,8 @@ app.register(async (app) => {
   // --- setări (admin): păstrate în baza de date, deci rămân la actualizarea aplicației ---
   const publicSettings = () => {
     const { smtp_pass, ...s } = mail.getSettings();
-    return { ...s, has_password: !!smtp_pass };
+    const { office_secret, ...o } = office.getSettings();
+    return { ...s, ...o, has_password: !!smtp_pass, has_office_secret: !!office_secret };
   };
   app.get('/api/admin/settings', { preHandler: requireAdmin }, async () => publicSettings());
   app.put('/api/admin/settings', { preHandler: requireAdmin }, async (req) => {
@@ -965,8 +981,22 @@ app.register(async (app) => {
     // parola nu este trimisă niciodată înapoi către browser; se schimbă doar dacă este completată
     if (b.clear_password) values.smtp_pass = '';
     else if (b.smtp_pass) values.smtp_pass = String(b.smtp_pass).slice(0, 500);
-    tx(() => mail.saveSettings(values));
-    audit(req, 'setări modificate', `SMTP ${values.smtp_host || 'dezactivat'}`);
+    const office_url = office.trimUrl(str(b.office_url, 200));
+    const office_app_url = office.trimUrl(str(b.office_app_url, 200));
+    for (const u of [office_url, office_app_url]) {
+      if (u && !/^https?:\/\/[^\s/]+(\/[^\s]*)?$/.test(u)) throw fail(400, 'Adresele editorului de documente trebuie să înceapă cu http:// sau https://.');
+    }
+    const ov = { office_url, office_app_url };
+    if (b.clear_office_secret) ov.office_secret = '';
+    else if (b.office_secret) {
+      if (String(b.office_secret).length < 8) throw fail(400, 'Cheia secretă a editorului trebuie să aibă cel puțin 8 caractere.');
+      ov.office_secret = String(b.office_secret).slice(0, 500);
+    }
+    tx(() => {
+      mail.saveSettings(values);
+      office.saveSettings(ov);
+    });
+    audit(req, 'setări modificate', `SMTP ${values.smtp_host || 'dezactivat'}; editor ${office.enabled() ? office_url : 'dezactivat'}`);
     return publicSettings();
   });
   app.post('/api/admin/settings/test', { preHandler: requireAdmin }, async (req) => {
@@ -992,10 +1022,7 @@ app.register(async (app) => {
   app.post('/api/admin/audit/prune', { preHandler: requireAdmin }, async (req) => {
     const until = str(req.body?.until, 10);
     if (!validDate(until)) throw fail(400, 'Alegeți o dată validă.');
-    // data de azi după ceasul local al serverului (același fus orar cu utilizatorii)
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    if (until >= today) throw fail(400, 'Se pot șterge doar înregistrările din zilele anterioare celei de azi.');
+    if (until >= localToday()) throw fail(400, 'Se pot șterge doar înregistrările din zilele anterioare celei de azi.');
     const r = db.prepare("DELETE FROM audit_log WHERE at < date(?, '+1 day')").run(until);
     audit(req, 'jurnal curățat', `${r.changes} înregistrări până la ${until.split('-').reverse().join('.')} inclusiv`);
     return { deleted: Number(r.changes) };
@@ -1038,10 +1065,225 @@ app.register(async (app) => {
     const signers = db.prepare('SELECT signed_at FROM document_signers WHERE document_id = ?').all(id);
     if (!canDelete(req.user, old, signers)) throw fail(403, 'Documentul are deja semnături; doar un administrator îl poate șterge.');
     audit(req, 'document șters', `#${id} ${old.title}`);
-    const stored = db.prepare('SELECT stored FROM document_files WHERE document_id = ?').all(id).map((f) => f.stored);
+    const stored = db.prepare('SELECT id, stored FROM document_files WHERE document_id = ?').all(id).flatMap((f) => [f.stored, ...versionsStored(f.id)]);
     db.prepare('DELETE FROM documents WHERE id = ?').run(id);
     removeStored(stored);
     return { ok: true };
+  });
+
+  // --- editare în pagină (ONLYOFFICE) ---
+  // Cine poate modifica un fișier: autorul (sau un administrator) oricând; ceilalți care văd documentul
+  // doar cât timp avizarea este deschisă, iar la documentele text doar cu modificări urmărite.
+  // Versiunile semnate și documentele care au deja semnături nu se mai modifică.
+  const officeFile = db.prepare(
+    `SELECT f.id, f.name, f.stored, f.size, f.version, f.signed_by_name, d.id AS document_id, d.title, d.created_by, d.review_until
+     FROM document_files f JOIN documents d ON d.id = f.document_id WHERE f.id = ?`
+  );
+  function editRights(user, f) {
+    const type = office.typeOf(f.name);
+    if (!type) return { edit: false, reason: 'Acest tip de fișier nu se poate deschide în editor.' };
+    if (!type[1]) return { edit: false, reason: 'Formatul vechi se poate doar citi. Pentru modificări, salvați fișierul ca .docx, .xlsx sau .pptx.' };
+    if (f.signed_by_name) return { edit: false, reason: 'Versiunea semnată nu se poate modifica.' };
+    if (db.prepare('SELECT 1 FROM document_signers WHERE document_id = ? AND signed_at IS NOT NULL').get(f.document_id)) {
+      return { edit: false, reason: 'Documentul are deja semnături; o modificare le-ar invalida.' };
+    }
+    if (canEdit(user, f)) return { edit: true, review: false };
+    if (reviewOpen(f)) return { edit: true, review: type[0] === 'word' };
+    if (f.review_until) return { edit: false, reason: `Termenul de avizare a expirat la ${f.review_until.split('-').reverse().join('.')}.` };
+    return { edit: false, reason: 'Doar autorul poate modifica acest document.' };
+  }
+  function accessibleFile(user, id) {
+    const acc = accessClause(user);
+    const ok = db.prepare(`SELECT 1 FROM document_files f JOIN documents d ON d.id = f.document_id WHERE f.id = ? AND ${acc.sql}`).get(id, ...acc.params);
+    return ok ? officeFile.get(id) : null;
+  }
+  // adresa la care serverul de documente ajunge la aplicație (poate diferi de cea din browser, ex. în Docker)
+  const appBase = (req) => office.trimUrl(office.getSettings().office_app_url || mail.getSettings().app_url || `${req.protocol}://${req.host}`);
+  const lockInfo = (l) => (l ? { name: l.name, since: new Date(l.since).toISOString() } : null);
+
+  app.get('/api/office/:id/config', { preHandler: requireUser }, async (req) => {
+    if (!office.enabled()) throw fail(400, 'Editorul de documente nu este configurat. Administratorul îl setează în pagina „Setări”.');
+    const f = accessibleFile(req.user, paramId(req));
+    if (!f || !fs.existsSync(path.join(UPLOAD_DIR, f.stored))) throw fail(404, 'Fișierul nu a fost găsit.');
+    const type = office.typeOf(f.name);
+    if (!type) throw fail(400, 'Acest tip de fișier nu se poate deschide în editor.');
+    const rights = editRights(req.user, f);
+    let mode = rights.edit && req.query.view !== '1' ? 'edit' : 'view';
+    let lockedBy = null;
+    // dacă altcineva lucrează deja la fișier, deschidem doar pentru citire
+    if (mode === 'edit') {
+      const l = office.takeLock(f.id, req.user);
+      if (!l.ok) {
+        mode = 'view';
+        lockedBy = lockInfo(l.lock);
+      }
+    }
+    const canWrite = mode === 'edit';
+    const base = appBase(req);
+    const config = {
+      documentType: type[0],
+      document: {
+        fileType: office.extOf(f.name),
+        key: office.docKey(f.stored),
+        title: f.name,
+        url: `${base}/api/office/file/${f.id}?t=${office.fileToken(f.id, f.stored)}`,
+        permissions: {
+          // la avizarea documentelor text: doar modificări urmărite, pe care autorul le acceptă sau le respinge
+          edit: canWrite && !rights.review,
+          review: canWrite,
+          comment: canWrite,
+          download: true,
+          print: true,
+          chat: false,
+        },
+      },
+      editorConfig: {
+        mode,
+        lang: 'ro',
+        region: 'ro-RO',
+        callbackUrl: `${base}/api/office/callback?f=${f.id}`,
+        user: { id: String(req.user.id), name: req.user.full_name },
+        customization: { forcesave: false, autosave: true, compactHeader: true, uiTheme: 'theme-light', chat: false },
+        coEditing: { mode: 'strict', change: false },
+      },
+    };
+    config.token = office.sign(config);
+    markSeen(req.user.id, f.document_id);
+    audit(req, canWrite ? 'fișier deschis pentru editare' : 'fișier deschis în editor', `#${f.document_id} ${f.name}`);
+    return {
+      config,
+      scriptUrl: `${office.trimUrl(office.getSettings().office_url)}/web-apps/apps/api/documents/api.js`,
+      mode,
+      review: canWrite && !!rights.review,
+      canEdit: rights.edit,
+      reason: rights.edit ? (lockedBy ? `${lockedBy.name} lucrează acum la acest fișier.` : '') : rights.reason,
+      lockedBy,
+      reviewUntil: f.review_until || '',
+      name: f.name,
+      title: f.title,
+    };
+  });
+
+  // Semnal de viață din pagina editorului: păstrează blocarea cât timp editorul este deschis.
+  // Cine are fișierul doar pentru citire află așa când s-a eliberat.
+  app.post('/api/office/:id/heartbeat', { preHandler: requireUser }, async (req) => {
+    const f = accessibleFile(req.user, paramId(req));
+    if (!f) throw fail(404, 'Fișierul nu a fost găsit.');
+    const l = office.lockOf(f.id);
+    const rights = editRights(req.user, f);
+    if (req.body?.editing && rights.edit && (!l || l.userId === req.user.id)) {
+      office.takeLock(f.id, req.user);
+      return { mine: true };
+    }
+    return { mine: false, lockedBy: l && l.userId !== req.user.id ? lockInfo(l) : null, free: !l && rights.edit };
+  });
+
+  // Serverul de documente descarcă fișierul prin linkul temporar semnat (nu are sesiunea utilizatorului).
+  async function requireOfficeFile(req) {
+    const p = office.verify(req.query.t);
+    const f = p && db.prepare('SELECT id, name, stored FROM document_files WHERE id = ?').get(paramId(req));
+    if (!f || p.f !== f.id || p.s !== f.stored) throw fail(403, 'Link de fișier invalid sau expirat.');
+    req.officeFile = f;
+  }
+  app.get('/api/office/file/:id', { preHandler: requireOfficeFile }, async (req, reply) => {
+    const file = path.join(UPLOAD_DIR, req.officeFile.stored);
+    if (!fs.existsSync(file)) throw fail(404, 'Fișierul nu a fost găsit.');
+    return reply.type('application/octet-stream').header('Content-Disposition', 'attachment').send(fs.createReadStream(file));
+  });
+
+  // Apelul serverului de documente (stare sesiune / fișier salvat). Corpul vine semnat cu cheia comună;
+  // folosim doar conținutul verificat din jeton, nu câmpurile nesemnate.
+  async function requireOfficeCallback(req) {
+    const auth = String(req.headers.authorization || '');
+    const fromBody = req.body && typeof req.body.token === 'string' ? office.verify(req.body.token) : null;
+    const fromHeader = !fromBody && auth.startsWith('Bearer ') ? office.verify(auth.slice(7)) : null;
+    const payload = fromBody || (fromHeader && (fromHeader.payload || fromHeader));
+    if (!payload || typeof payload !== 'object') throw fail(403, 'Apel nesemnat sau cu semnătură greșită.');
+    req.officeCall = payload;
+  }
+  // Descarcă versiunea salvată de serverul de documente, cu limita obișnuită de 50 MB.
+  async function fetchSaved(url, dest) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
+    if (!res.ok || !res.body) throw new Error('descărcare eșuată: HTTP ' + res.status);
+    if (Number(res.headers.get('content-length')) > MAX_FILE) throw new Error('fișier prea mare');
+    let size = 0;
+    const limit = new Transform({
+      transform(chunk, enc, cb) {
+        size += chunk.length;
+        cb(size > MAX_FILE ? new Error('fișier prea mare') : null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(res.body), limit, fs.createWriteStream(dest));
+    return size;
+  }
+  app.post('/api/office/callback', { preHandler: requireOfficeCallback }, async (req) => {
+    const c = req.officeCall;
+    const fileId = Number(req.query.f);
+    const f = isId(fileId) ? officeFile.get(fileId) : null;
+    // cheia trebuie să fie a acestui fișier: versiunea curentă sau una anterioară (sesiune începută înainte de ultima salvare)
+    const keys = f ? [f.stored, ...versionsStored(f.id)].map(office.docKey) : [];
+    if (!f || !keys.includes(c.key)) {
+      req.log.warn({ fileId, key: c.key }, 'apel ONLYOFFICE pentru un fișier necunoscut');
+      return { error: 1 };
+    }
+    const users = Array.isArray(c.users) ? c.users.map(Number) : [];
+    if (c.status === 1) {
+      // sesiune activă: blocarea rămâne a celui care editează
+      const l = office.lockOf(f.id);
+      if (l && users.includes(l.userId)) office.takeLock(f.id, { id: l.userId, full_name: l.name });
+      return { error: 0 };
+    }
+    if (c.status === 2 || c.status === 6) {
+      if (typeof c.url !== 'string' || !/^https?:\/\//.test(c.url)) return { error: 1 };
+      const editor = isId(users[0]) ? db.prepare('SELECT username, full_name FROM users WHERE id = ?').get(users[0]) : null;
+      const stored = crypto.randomBytes(16).toString('hex');
+      try {
+        const size = await fetchSaved(c.url, path.join(UPLOAD_DIR, stored));
+        const version = tx(() => {
+          const cur = db.prepare('SELECT id, stored, size, version, edited_by_name, edited_at, created_at FROM document_files WHERE id = ?').get(f.id);
+          if (!cur) throw new Error('fișierul a fost șters între timp');
+          db.prepare('INSERT INTO file_versions (file_id, version, stored, size, edited_by_name, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+            cur.id, cur.version, cur.stored, cur.size, cur.edited_by_name, cur.edited_at || cur.created_at
+          );
+          db.prepare("UPDATE document_files SET stored = ?, size = ?, version = version + 1, edited_by_name = ?, edited_at = datetime('now') WHERE id = ?").run(
+            stored, size, editor ? editor.full_name : 'Editor de documente', f.id
+          );
+          db.prepare("UPDATE documents SET updated_at = datetime('now') WHERE id = ?").run(f.document_id);
+          return cur.version + 1;
+        });
+        audit(req, 'fișier modificat în editor', `#${f.document_id} ${f.name} (versiunea ${version}; cea anterioară se păstrează)`, editor?.username || 'editor');
+      } catch (e) {
+        removeStored([stored]);
+        req.log.error(e, 'salvarea din ONLYOFFICE a eșuat');
+        return { error: 1 };
+      }
+      if (c.status === 2) office.releaseLock(f.id);
+      return { error: 0 };
+    }
+    // 3 = eroare la salvare, 4 = închis fără modificări, 7 = eroare la salvarea forțată
+    if (c.status === 3 || c.status === 7) req.log.error({ fileId: f.id, status: c.status }, 'ONLYOFFICE nu a putut salva documentul');
+    if (c.status === 3 || c.status === 4) office.releaseLock(f.id);
+    return { error: 0 };
+  });
+
+  // Versiunile anterioare ale unui fișier modificat în editor.
+  app.get('/api/files/:id/versions', { preHandler: requireUser }, async (req) => {
+    const f = accessibleFile(req.user, paramId(req));
+    if (!f) throw fail(404, 'Fișierul nu a fost găsit.');
+    return db.prepare('SELECT id, version, size, edited_by_name, created_at FROM file_versions WHERE file_id = ? ORDER BY version DESC').all(f.id);
+  });
+  app.get('/api/file-versions/:id', { preHandler: requireUser }, async (req, reply) => {
+    const v = db.prepare('SELECT file_id, version, stored FROM file_versions WHERE id = ?').get(paramId(req));
+    const f = v && accessibleFile(req.user, v.file_id);
+    const file = f && path.join(UPLOAD_DIR, v.stored);
+    if (!f || !fs.existsSync(file)) throw fail(404, 'Versiunea nu a fost găsită.');
+    audit(req, 'versiune veche descărcată', `#${f.document_id} ${f.name} (versiunea ${v.version})`);
+    const ext = path.extname(f.name);
+    const name = `${path.basename(f.name, ext)} (versiunea ${v.version})${ext}`;
+    reply
+      .type('application/octet-stream')
+      .header('Content-Disposition', `attachment; filename="${name.replace(/[^\x20-\x7e]|["\\]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`);
+    return reply.send(fs.createReadStream(file));
   });
 
   app.get('/api/files/:id', { preHandler: requireUser }, async (req, reply) => {
@@ -1084,7 +1326,7 @@ function cleanupLeftovers() {
       if (/^import-/.test(n)) fs.rmSync(path.join(DATA_DIR, n), { recursive: true, force: true });
     }
     // Fișierele fără document (o încărcare întreruptă) nu se șterg automat, doar se semnalează.
-    const known = new Set(db.prepare('SELECT stored FROM document_files').all().map((r) => r.stored));
+    const known = new Set(db.prepare('SELECT stored FROM document_files UNION ALL SELECT stored FROM file_versions').all().map((r) => r.stored));
     const orphans = fs.readdirSync(UPLOAD_DIR).filter((n) => !known.has(n)).length;
     if (orphans) console.warn(`Atenție: ${orphans} fișiere din ${UPLOAD_DIR} nu aparțin niciunui document.`);
     const missing = [...known].filter((n) => !fs.existsSync(path.join(UPLOAD_DIR, n))).length;

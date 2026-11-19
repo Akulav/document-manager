@@ -12,6 +12,7 @@ const store = reactive({
   docsLoaded: false,
   toast: null,
   dialog: null,
+  editor: null, // fișierul deschis în editorul de documente: { fileId }
   route: location.hash.slice(1) || 'documente',
 });
 window.addEventListener('hashchange', () => (store.route = location.hash.slice(1) || 'documente'));
@@ -26,6 +27,7 @@ function clearSession() {
   store.docs = [];
   store.docsLoaded = false;
   store.dialog = null;
+  store.editor = null;
 }
 
 let toastTimer;
@@ -328,6 +330,9 @@ const ICONS = {
   upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
   tag: '<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="8" cy="8" r="1.5"/>',
+  eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>',
+  review: '<path d="M4 5h16v11H10l-5 4v-4H4z"/><path d="M8 9h8M8 12h5"/>',
 };
 const Icon = {
   props: { name: String },
@@ -353,6 +358,16 @@ function mailNote(m) {
   return parts.length ? 'E-mail netrimis — ' + parts.join('; ') : '';
 }
 
+// Formatele pe care le deschide editorul de documente (ONLYOFFICE); cele vechi doar pentru citire.
+const OFFICE_EDIT = ['docx', 'odt', 'xlsx', 'ods', 'pptx', 'odp', 'pdf'];
+const OFFICE_VIEW = [...OFFICE_EDIT, 'doc', 'rtf', 'txt', 'xls', 'csv', 'ppt'];
+const extName = (n) => ((/\.([a-z0-9]{1,5})$/i.exec(n) || [])[1] || '').toLowerCase();
+const fmtDay = (s) => (s ? s.split('-').reverse().join('.') : '');
+const addDays = (n) => {
+  const d = new Date(Date.now() + n * 86400000);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+};
+
 const DocForm = {
   components: { Modal, Icon },
   props: { doc: Object },
@@ -366,6 +381,7 @@ const DocForm = {
       signFilter: '',
       newFiles: [],
       needsSign: d ? d.signers.length > 0 : false,
+      needsReview: d ? !!d.review_until : false,
       form: {
         title: d ? d.title : '',
         number: d ? d.number : '',
@@ -376,6 +392,7 @@ const DocForm = {
         unitIds: d ? [...d.unitIds] : [],
         userIds: d ? [...d.userIds] : [],
         signerIds: d ? d.signers.map((s) => s.id) : [],
+        review_until: d && d.review_until ? d.review_until : addDays(7),
         removeFileIds: [],
       },
     };
@@ -394,6 +411,10 @@ const DocForm = {
     keptFiles() {
       return this.doc ? this.doc.files.filter((f) => !f.signed_by_name && !this.form.removeFileIds.includes(f.id)) : [];
     },
+    reviewHint() {
+      const who = this.form.visibility === 'all' ? 'toți angajații' : 'persoanele și subdiviziunile selectate la „Acces”';
+      return 'Până la ' + fmtDay(this.form.review_until) + ', ' + who + ' pot deschide fișierele în editor și propune modificări sau comentarii; apoi documentul devine doar pentru citire, iar dvs. îl puteți modifica în continuare.' + (store.me.office ? '' : ' Atenție: editorul de documente nu este încă configurat (pagina „Setări”).');
+    },
     mailHint() {
       return store.me.mailEnabled
         ? 'Persoana aflată la rând primește un e-mail și o notificare în aplicație. Semnatarii văd documentul indiferent de setările de vizibilitate.'
@@ -402,6 +423,7 @@ const DocForm = {
   },
   methods: {
     fmtSize,
+    today,
     match(filter, selected) {
       const q = filter.trim().toLowerCase();
       return store.users.filter((u) => !q || u.full_name.toLowerCase().includes(q) || selected.includes(u.id));
@@ -448,7 +470,8 @@ const DocForm = {
     },
     async submit() {
       const fd = new FormData();
-      fd.append('data', JSON.stringify({ ...this.form, signerIds: this.needsSign ? this.form.signerIds : [] }));
+      if (this.needsReview && !this.form.review_until) return toast('Alegeți termenul de avizare.', true);
+      fd.append('data', JSON.stringify({ ...this.form, signerIds: this.needsSign ? this.form.signerIds : [], review_until: this.needsReview ? this.form.review_until : '' }));
       for (const f of this.newFiles) fd.append('files', f);
       this.busy = true;
       try {
@@ -567,6 +590,17 @@ const DocForm = {
             <p v-else class="muted small hint">Activați dacă documentul trebuie semnat de una sau mai multe persoane, în ordine.</p>
           </section>
         </div>
+
+        <section class="fsec">
+          <div class="fsec-head"><span class="fnum">6</span><div><h3>Avizare</h3><p>Cei care văd documentul îl pot modifica și comenta direct în pagină, până la termen</p></div>
+            <label class="switch" title="Documentul este trimis spre avizare"><input type="checkbox" v-model="needsReview" aria-label="Documentul este trimis spre avizare" /><span></span></label>
+          </div>
+          <div v-if="needsReview" class="review-row">
+            <label class="field mb0"><span>Termen de avizare (inclusiv)</span><input v-model="form.review_until" type="date" :min="doc ? undefined : today()" required /></label>
+            <p class="muted small hint">{{ reviewHint }}</p>
+          </div>
+          <p v-else class="muted small hint">Activați pentru a cere observații: fiecare deschide fișierul în editor, pe rând (cât timp unul lucrează, ceilalți îl văd doar pentru citire). La documentele Word modificările apar ca propuneri, pe care le acceptați sau le respingeți.</p>
+        </section>
       </div>
     </Modal>`,
 };
@@ -745,12 +779,186 @@ const isPdfName = (n) => /\.pdf$/i.test(n);
 // Rândul din listă arată doar esențialul, pe coloane fixe (data, denumirea, starea, numărul de fișiere);
 // detaliile, fișierele, semnarea și acțiunile apar la extinderea rândului.
 const DOC_TAGS_IN_ROW = 3;
+
+// ---------- editorul de documente (ONLYOFFICE) ----------
+// Scriptul editorului vine de pe serverul de documente din rețeaua internă și se încarcă o singură dată.
+let docsApiLoad = null;
+function loadDocsApi(url) {
+  if (window.DocsAPI) return Promise.resolve();
+  if (docsApiLoad && docsApiLoad.url === url) return docsApiLoad.p;
+  const p = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.async = true;
+    s.onload = () => (window.DocsAPI ? resolve() : reject(new Error('Scriptul editorului s-a încărcat, dar nu este cel așteptat. Verificați adresa serverului de documente din „Setări”.')));
+    s.onerror = () => {
+      docsApiLoad = null;
+      s.remove();
+      reject(new Error('Serverul de documente nu răspunde (' + new URL(url).origin + '). Verificați că este pornit și că adresa din „Setări” este corectă.'));
+    };
+    document.head.appendChild(s);
+  });
+  docsApiLoad = { url, p };
+  return p;
+}
+
+// Fereastra editorului, pe tot ecranul. Cine o deschide primul poate modifica fișierul; ceilalți îl văd
+// doar pentru citire și sunt anunțați când se eliberează. Semnalul de viață (la 30 s) păstrează blocarea.
+const OfficeEditor = {
+  components: { Icon },
+  props: { fileId: Number },
+  emits: ['close'],
+  data: () => ({ info: null, error: '', ready: false, canTake: false, lost: false }),
+  computed: {
+    state() {
+      const i = this.info;
+      if (!i) return null;
+      if (i.mode === 'edit' && i.review) {
+        return {
+          label: 'Avizare · modificări urmărite',
+          cls: 'amber',
+          icon: 'review',
+          note: 'Modificările dvs. apar ca propuneri; autorul le acceptă sau le respinge.' + (i.reviewUntil ? ' Termen: ' + fmtDay(i.reviewUntil) + '.' : '') + ' Se salvează automat.',
+        };
+      }
+      if (i.mode === 'edit') return { label: 'Editare', cls: 'green', icon: 'edit', note: 'Cât timp editorul este deschis, ceilalți văd fișierul doar pentru citire. Modificările se salvează automat.' };
+      return { label: 'Doar citire', cls: 'gray', icon: 'lock', note: i.reason || '' };
+    },
+  },
+  async mounted() {
+    this.onKey = (e) => e.key === 'Escape' && !this.editor && this.close();
+    document.addEventListener('keydown', this.onKey);
+    document.body.classList.add('noscroll');
+    await this.open(false);
+    this.timer = setInterval(() => this.beat(), 30000);
+  },
+  beforeUnmount() {
+    clearInterval(this.timer);
+    document.removeEventListener('keydown', this.onKey);
+    document.body.classList.remove('noscroll');
+    this.destroy();
+  },
+  methods: {
+    async open(viewOnly) {
+      this.destroy();
+      Object.assign(this, { ready: false, error: '', canTake: false, lost: false });
+      try {
+        const info = await api('/api/office/' + this.fileId + '/config' + (viewOnly ? '?view=1' : ''));
+        this.info = info;
+        await loadDocsApi(info.scriptUrl);
+        // editorul înlocuiește elementul primit cu propriul iframe, deci îi dăm unul pe care Vue nu îl gestionează
+        const host = this.$refs.host;
+        if (!host) return;
+        host.textContent = '';
+        const ph = document.createElement('div');
+        ph.id = 'oo-' + this.fileId + '-' + Date.now();
+        host.appendChild(ph);
+        this.editor = new window.DocsAPI.DocEditor(ph.id, {
+          ...info.config,
+          width: '100%',
+          height: '100%',
+          type: 'desktop',
+          events: {
+            onAppReady: () => (this.ready = true),
+            onDocumentReady: () => (this.ready = true),
+            onError: (e) => (this.error = 'Editorul a raportat o eroare: ' + ((e && e.data && e.data.errorDescription) || 'necunoscută') + '.'),
+          },
+        });
+      } catch (e) {
+        this.error = e.message;
+      }
+    },
+    destroy() {
+      if (!this.editor) return;
+      try {
+        this.editor.destroyEditor();
+      } catch {}
+      this.editor = null;
+    },
+    async beat() {
+      if (!this.info || this.error) return;
+      try {
+        const r = await api('/api/office/' + this.fileId + '/heartbeat', { method: 'POST', body: { editing: this.info.mode === 'edit' } });
+        if (this.info.mode === 'edit') this.lost = !r.mine;
+        else {
+          this.canTake = !!r.free;
+          if (r.lockedBy) this.info.reason = r.lockedBy.name + ' lucrează acum la acest fișier.';
+          else if (r.free) this.info.reason = 'Fișierul s-a eliberat: îl puteți deschide pentru editare.';
+        }
+      } catch {}
+    },
+    close() {
+      const editing = this.info && this.info.mode === 'edit';
+      this.$emit('close');
+      // serverul de documente salvează la câteva secunde după închidere; reîmprospătăm apoi lista
+      if (editing) {
+        toast('Modificările se salvează automat în câteva secunde.');
+        setTimeout(() => loadDocs().catch(() => {}), 12000);
+        setTimeout(() => loadDocs().catch(() => {}), 30000);
+      }
+    },
+  },
+  template: /*html*/ `
+    <div class="oo-overlay" role="dialog" aria-modal="true" :aria-label="'Editor: ' + (info ? info.name : '')">
+      <header class="oo-bar">
+        <div class="oo-title">
+          <b :title="info ? info.name : ''">{{ info ? info.name : 'Se deschide documentul…' }}</b>
+          <span v-if="info" class="small" :title="info.title">{{ info.title }}</span>
+        </div>
+        <span v-if="state" class="pill" :class="state.cls"><Icon :name="state.icon" />{{ state.label }}</span>
+        <span v-if="lost" class="oo-note warn small">Legătura s-a întrerupt prea mult timp; închideți și redeschideți fișierul ca să nu lucrați în paralel cu altcineva.</span>
+        <span v-else-if="state && state.note" class="oo-note small">{{ state.note }}</span>
+        <button v-if="canTake" type="button" class="btn sm primary" @click="open(false)"><Icon name="edit" />Deschide pentru editare</button>
+        <button type="button" class="btn sm" @click="close">Închide</button>
+      </header>
+      <div class="oo-body">
+        <div ref="host" class="oo-host"></div>
+        <div v-if="error" class="oo-msg"><div class="card oo-err"><b>Editorul nu s-a putut deschide</b><p class="muted">{{ error }}</p><button type="button" class="btn" @click="open(false)">Reîncearcă</button></div></div>
+        <div v-else-if="!ready" class="oo-msg"><span class="spinner"></span>Se încarcă editorul…</div>
+      </div>
+    </div>`,
+};
+
+// Versiunile anterioare ale unui fișier modificat în editor (fiecare salvare păstrează versiunea dinainte).
+const FileVersions = {
+  components: { Modal },
+  props: { file: Object },
+  emits: ['close'],
+  data: () => ({ list: null }),
+  async mounted() {
+    try {
+      this.list = await api('/api/files/' + this.file.id + '/versions');
+    } catch (e) {
+      toast(e.message, true);
+      this.$emit('close');
+    }
+  },
+  methods: { fmtSize, fmtDateTime },
+  template: /*html*/ `
+    <Modal :title="'Versiuni: ' + file.name" ok-label="Închide" cancel-label="" @close="$emit('close')" @submit="$emit('close')">
+      <div class="vlist">
+        <div class="vrow current">
+          <span class="vnum">v{{ file.version }}</span>
+          <span class="vtxt"><b>Versiunea curentă</b><span class="muted small">{{ file.edited_by_name ? 'modificată de ' + file.edited_by_name : 'originalul' }}<template v-if="file.edited_at">, {{ fmtDateTime(file.edited_at) }}</template> · {{ fmtSize(file.size) }}</span></span>
+          <a class="btn sm" :href="'/api/files/' + file.id + '?download=1'">Descarcă</a>
+        </div>
+        <div v-if="!list" class="vrow"><span class="spinner"></span></div>
+        <div v-for="v in list || []" :key="v.id" class="vrow">
+          <span class="vnum">v{{ v.version }}</span>
+          <span class="vtxt"><b>{{ v.version === 1 ? 'Originalul' : 'Versiunea ' + v.version }}</b><span class="muted small">{{ v.edited_by_name ? 'modificată de ' + v.edited_by_name : 'încărcată la adăugare' }}<template v-if="v.created_at">, {{ fmtDateTime(v.created_at) }}</template> · {{ fmtSize(v.size) }}</span></span>
+          <a class="btn sm" :href="'/api/file-versions/' + v.id">Descarcă</a>
+        </div>
+      </div>
+      <p class="muted small hint">Pentru a reveni la o versiune veche, descărcați-o și încărcați-o din nou din „Modifică”.</p>
+    </Modal>`,
+};
+
 const DocCard = {
-  components: { FileLink, Modal, SignatureCheck, Icon },
+  components: { FileLink, Modal, SignatureCheck, Icon, FileVersions },
   props: { doc: Object, startOpen: Boolean },
   emits: ['edit'],
   data() {
-    return { open: this.startOpen, busy: false, reminding: false, signing: '', certPick: null, verifying: null };
+    return { open: this.startOpen, busy: false, reminding: false, signing: '', certPick: null, verifying: null, versionsOf: null };
   },
   computed: {
     store: () => store,
@@ -776,6 +984,7 @@ const DocCard = {
       const d = this.doc;
       if (d.mySign === 'pending') return { label: 'De semnat de dvs.', cls: 'amber solid', icon: 'pen' };
       if (d.signers.length && d.signers.some((s) => !s.active && !s.signed_at)) return { label: 'Semnare blocată', cls: 'red' };
+      if (d.reviewOpen) return { label: 'Avizare · ' + fmtDay(d.review_until).slice(0, 5), cls: '', icon: 'review', title: 'În avizare până la ' + fmtDay(d.review_until) + ' inclusiv' };
       if (d.signers.length && this.pending) return { label: 'Semnare ' + (d.signers.length - this.pending) + '/' + d.signers.length, cls: 'amber' };
       if (d.signers.length) return { label: 'Semnat', cls: 'green', icon: 'pen' };
       if (d.visibility === 'restricted') return { label: 'Acces limitat', cls: 'gray', icon: 'lock' };
@@ -809,8 +1018,23 @@ const DocCard = {
     canToken() {
       return this.latest.length > 0 && this.latest.every((f) => isPdfName(f.name));
     },
+    hasSignatures() {
+      return this.doc.signers.some((s) => s.signed_at);
+    },
   },
   methods: {
+    fmtDay,
+    // butonul din dreptul fișierului: serverul decide oricum dreptul real la deschidere
+    inEditor(f) {
+      return !!store.me.office && OFFICE_VIEW.includes(extName(f.name));
+    },
+    canModify(f) {
+      const d = this.doc;
+      return this.inEditor(f) && OFFICE_EDIT.includes(extName(f.name)) && !f.signed_by_name && !this.hasSignatures && (d.canEdit || d.reviewOpen);
+    },
+    openEditor(f) {
+      store.editor = { fileId: f.id };
+    },
     chipStyle,
     docDay,
     docMon,
@@ -937,7 +1161,7 @@ const DocCard = {
             <span v-if="hiddenTags" class="chip more">+{{ hiddenTags }}</span>
           </span>
         </span>
-        <span class="d-status"><span v-if="status" class="pill" :class="status.cls"><Icon v-if="status.icon" :name="status.icon" />{{ status.label }}</span></span>
+        <span class="d-status"><span v-if="status" class="pill" :class="status.cls" :title="status.title || status.label"><Icon v-if="status.icon" :name="status.icon" />{{ status.label }}</span></span>
         <span class="d-files" :title="fileCount ? fileCount + (fileCount === 1 ? ' fișier' : ' fișiere') : 'Fără fișiere'"><Icon name="clip" /><b>{{ fileCount }}</b></span>
         <span class="d-chev"><Icon name="chevron" /></span>
       </button>
@@ -946,8 +1170,19 @@ const DocCard = {
         <div class="dgrid">
           <section class="dsec">
             <h4><Icon name="file" />Fișiere</h4>
-            <div v-if="originals.length" class="dfiles"><FileLink v-for="f in originals" :key="f.id" :file="f" @open="opened" /></div>
+            <div v-if="originals.length" class="dfiles">
+              <div v-for="f in originals" :key="f.id" class="dfile">
+                <FileLink :file="f" @open="opened" />
+                <button v-if="inEditor(f)" type="button" class="btn sm" :class="{ primary: canModify(f) && !doc.canEdit }" @click="openEditor(f)">
+                  <template v-if="canModify(f)"><Icon :name="doc.canEdit ? 'edit' : 'review'" />{{ doc.canEdit ? 'Editează' : 'Avizează' }}</template>
+                  <template v-else><Icon name="eye" />Deschide</template>
+                </button>
+                <button v-if="f.version > 1" type="button" class="icon-btn" title="Versiuni anterioare" aria-label="Versiuni anterioare" @click="versionsOf = f"><Icon name="history" /></button>
+                <span v-if="f.version > 1" class="dfile-meta">v{{ f.version }} · modificat de {{ f.edited_by_name || '—' }}<template v-if="f.edited_at">, {{ fmtDateTime(f.edited_at) }}</template></span>
+              </div>
+            </div>
             <p v-else class="muted small">Nu sunt fișiere atașate.</p>
+            <p v-if="doc.reviewOpen && !doc.canEdit && store.me.office && !hasSignatures" class="review-note small"><Icon name="review" />În avizare până la {{ fmtDay(doc.review_until) }}. Apăsați „Avizează”: modificările dvs. apar ca propuneri pentru autor.</p>
             <template v-if="signedLatest.length">
               <h4 class="mt14"><Icon name="pen" />Versiunea semnată</h4>
               <div class="dfiles"><FileLink v-for="f in signedLatest" :key="f.id" :file="f" @open="opened" /></div>
@@ -961,6 +1196,7 @@ const DocCard = {
               <dt>Număr</dt><dd>{{ doc.number || '—' }}</dd>
               <dt>Adăugat de</dt><dd>{{ doc.author || '—' }}</dd>
               <dt>Acces</dt><dd>{{ visLabel(doc) }}</dd>
+              <template v-if="doc.review_until"><dt>Avizare</dt><dd>{{ doc.reviewOpen ? 'deschisă până la ' + fmtDay(doc.review_until) + ' inclusiv' : 'încheiată (termen ' + fmtDay(doc.review_until) + ')' }}</dd></template>
               <dt>Etichete</dt>
               <dd>
                 <span v-if="!validTags.length" class="muted">—</span>
@@ -1014,6 +1250,7 @@ const DocCard = {
         </label>
       </Modal>
       <SignatureCheck v-if="verifying" :files="verifying" @close="verifying = null" />
+      <FileVersions v-if="versionsOf" :file="versionsOf" @close="versionsOf = null" />
     </article>`,
 };
 
@@ -1185,7 +1422,6 @@ const BackupView = {
   },
   // Afișat în pagina „Setări”, în coloana din dreapta.
   template: /*html*/ `
-    <div class="settings-col">
       <section class="card panel">
         <div class="panel-head"><h2>Export complet</h2><span class="pill">Backup</span></div>
         <p class="muted small">Un singur fișier comprimat cu tot: utilizatori (parole criptate), organigramă, categorii, documente, semnături și fișiere. Fiecare element are sumă de control.</p>
@@ -1204,8 +1440,7 @@ const BackupView = {
         <div class="panel-foot">
           <button class="btn danger-solid" :disabled="!file || busy" @click="restore">{{ busy ? 'Se importă… nu închideți pagina' : 'Importă și înlocuiește tot' }}</button>
         </div>
-      </section>
-    </div>`,
+      </section>`,
 };
 
 // ---------- utilizatori ----------
@@ -2157,8 +2392,9 @@ const SettingsView = {
   },
   methods: {
     fill(s) {
-      this.f = { ...s, smtp_pass: '', clear_password: false };
+      this.f = { ...s, smtp_pass: '', clear_password: false, office_secret: '', clear_office_secret: false };
       store.me.mailEnabled = !!s.smtp_host;
+      store.me.office = !!(s.office_url && s.has_office_secret);
     },
     async save() {
       this.busy = true;
@@ -2176,7 +2412,7 @@ const SettingsView = {
       <div class="page-head">
         <div>
           <h1>Setări</h1>
-          <p class="muted page-sub">E-mailul pentru notificările de semnare și copia de rezervă a datelor.</p>
+          <p class="muted page-sub">E-mailul pentru notificări, editorul de documente și copia de rezervă a datelor.</p>
         </div>
       </div>
       <div class="settings-grid">
@@ -2216,7 +2452,23 @@ const SettingsView = {
           </div>
         </form>
         <div v-else class="card panel boot-panel"><span class="spinner"></span></div>
-        <BackupView />
+        <form v-if="f" class="card panel" @submit.prevent="save">
+          <div class="panel-head">
+            <h2>Editor de documente</h2>
+            <span class="pill" :class="f.office_url && (f.has_office_secret || f.office_secret) ? 'green' : 'gray'">{{ f.office_url && f.has_office_secret ? 'Activ' : 'Dezactivat' }}</span>
+          </div>
+          <p class="muted small">Serverul ONLYOFFICE Docs din rețeaua internă, pentru deschiderea și modificarea fișierelor direct în pagină (avizare). Cheia secretă este aceeași cu JWT_SECRET al serverului de documente.</p>
+          <label class="field"><span>Adresa serverului de documente</span><input v-model="f.office_url" maxlength="200" placeholder="ex. http://docs.ansc.local:8080" /></label>
+          <label class="field"><span>Cheia secretă (JWT)</span>
+            <input v-model="f.office_secret" type="password" autocomplete="new-password" :disabled="f.clear_office_secret" :placeholder="f.has_office_secret ? '•••••••• (salvată)' : ''" />
+          </label>
+          <label class="field"><span>Adresa aplicației pentru serverul de documente <span class="opt">(opțional)</span></span><input v-model="f.office_app_url" maxlength="200" placeholder="implicit: Adresa aplicației; ex. http://10.0.0.5:3080" /></label>
+          <label v-if="f.has_office_secret" class="check pull-up"><input type="checkbox" v-model="f.clear_office_secret" /> Șterge cheia salvată (dezactivează editorul)</label>
+          <div class="panel-foot">
+            <button class="btn primary" :disabled="busy">Salvează setările</button>
+          </div>
+        </form>
+        <div class="settings-col"><BackupView /></div>
       </div>
     </div>`,
 };
@@ -2351,7 +2603,7 @@ const PeopleView = {
 
 // ---------- aplicația ----------
 const App = {
-  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, PeopleView, CategoriesView, SettingsView, AuditView },
+  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, PeopleView, CategoriesView, SettingsView, AuditView, OfficeEditor },
   data: () => ({ pass: null, passBusy: false, bump: false }),
   computed: {
     store: () => store,
@@ -2438,6 +2690,7 @@ const App = {
         </header>
         <main class="page" :class="pageClass"><component :is="view" /></main>
         <Modal v-if="pass" title="Schimbă parola" :busy="passBusy" @close="pass = null" @submit="savePass"><PasswordFields v-model="pass" /></Modal>
+        <OfficeEditor v-if="store.editor" :key="store.editor.fileId" :file-id="store.editor.fileId" @close="store.editor = null" />
       </template>
     </template>
     <div v-else class="boot" aria-live="polite"><span class="spinner"></span>Se încarcă…</div>

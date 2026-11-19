@@ -20,9 +20,10 @@ const { db, tx, UPLOAD_DIR, DATA_DIR } = require('./db');
 const MAGIC = 'ANSC-BACKUP 1';
 const STORED = /^[0-9a-f]{32}$/;
 // Ordinea contează doar la ștergere (copiii înaintea părinților); sesiunile nu se exportă.
+// file_versions = versiunile anterioare ale fișierelor modificate în editor (lipsesc din backupurile vechi).
 const TABLES = [
   'units', 'users', 'categories', 'tags', 'documents',
-  'document_files', 'document_tags', 'document_units', 'document_users', 'document_seen', 'document_signers',
+  'document_files', 'file_versions', 'document_tags', 'document_units', 'document_users', 'document_seen', 'document_signers',
 ];
 const bad = (message) => Object.assign(new Error(message), { expose: true });
 const line = (obj) => Buffer.from(JSON.stringify(obj) + '\n');
@@ -32,7 +33,7 @@ async function* archive() {
   // Instantaneu sincron al bazei de date: nicio altă cerere nu se poate intercala aici.
   const tables = {};
   for (const t of TABLES) tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
-  const stored = tables.document_files.map((f) => f.stored);
+  const stored = [...tables.document_files, ...tables.file_versions].map((f) => f.stored);
   const missing = new Set(stored.filter((s) => !fs.existsSync(path.join(UPLOAD_DIR, s))));
   const json = Buffer.from(JSON.stringify({ format: 1, created_at: new Date().toISOString(), missing: [...missing], tables }));
 
@@ -178,11 +179,12 @@ async function importArchive(input) {
   const stage = fs.mkdtempSync(path.join(DATA_DIR, 'import-'));
   try {
     const { data, files } = await readArchive(input, stage);
-    if (data.format !== 1 || !data.tables || !TABLES.every((t) => Array.isArray(data.tables[t]) || t.startsWith('document_s'))) {
+    if (data.format !== 1 || !data.tables || !TABLES.every((t) => Array.isArray(data.tables[t]) || t.startsWith('document_s') || t === 'file_versions')) {
       throw bad('Versiune de backup necunoscută.');
     }
     const missing = new Set(data.missing || []);
-    for (const f of data.tables.document_files) {
+    const allFiles = [...data.tables.document_files, ...(data.tables.file_versions || [])];
+    for (const f of allFiles) {
       if (!STORED.test(f.stored) || (!files.has(f.stored) && !missing.has(f.stored))) throw bad('Arhiva nu conține toate fișierele documentelor.');
     }
 
@@ -208,7 +210,7 @@ async function importArchive(input) {
     });
 
     // 3. Fișierele care nu mai aparțin niciunui document se șterg.
-    const keep = new Set(data.tables.document_files.map((f) => f.stored));
+    const keep = new Set(allFiles.map((f) => f.stored));
     for (const name of fs.readdirSync(UPLOAD_DIR)) if (!keep.has(name)) fs.rmSync(path.join(UPLOAD_DIR, name), { force: true });
 
     return {

@@ -120,6 +120,24 @@ addColumn('document_files', 'signed_by', 'INTEGER'); // cine a încărcat aceast
 addColumn('document_files', 'signed_by_name', 'TEXT'); // numele rămâne chiar dacă utilizatorul este șters
 addColumn('document_files', 'created_at', 'TEXT');
 addColumn('users', 'phone', "TEXT NOT NULL DEFAULT ''"); // telefonul de serviciu, completat de administrator
+// avizare: până la această dată (AAAA-LL-ZZ, inclusiv) cei care văd documentul îl pot modifica în editor
+addColumn('documents', 'review_until', "TEXT NOT NULL DEFAULT ''");
+// editarea în pagină: fiecare salvare crește versiunea; versiunea anterioară trece în file_versions
+addColumn('document_files', 'version', 'INTEGER NOT NULL DEFAULT 1');
+addColumn('document_files', 'edited_by_name', 'TEXT');
+addColumn('document_files', 'edited_at', 'TEXT');
+db.exec(`
+CREATE TABLE IF NOT EXISTS file_versions (
+  id INTEGER PRIMARY KEY,
+  file_id INTEGER NOT NULL REFERENCES document_files(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  stored TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  edited_by_name TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_file_versions_file ON file_versions(file_id);
+`);
 
 const INITIAL_PASSWORD_FILE = path.join(DATA_DIR, 'parola-initiala-admin.txt');
 
