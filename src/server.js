@@ -190,7 +190,9 @@ function readUser(body) {
   if (unit_id !== null && !unitMap().has(unit_id)) throw fail(400, 'Subdiviziunea selectată nu există.');
   const email = str(body.email, 150);
   if (email && !EMAIL_RE.test(email)) throw fail(400, 'Adresa de e-mail nu este validă.');
-  return { full_name, username, role, unit_id, position: str(body.position, 150), email, active: body.active === false ? 0 : 1 };
+  const phone = str(body.phone, 40);
+  if (phone && !/^[0-9+()./ -]{3,40}$/.test(phone)) throw fail(400, 'Numărul de telefon poate conține doar cifre, spații și + ( ) - . /');
+  return { full_name, username, role, unit_id, position: str(body.position, 150), email, phone, active: body.active === false ? 0 : 1 };
 }
 
 // Parolă temporară ușor de transmis: fără caractere care se confundă (0/O, 1/l/I).
@@ -530,10 +532,10 @@ app.register(async (app) => {
     return { ok: true };
   });
 
-  // --- organigramă (vizibilă tuturor angajaților) ---
+  // --- organigramă și lista angajaților (vizibile tuturor angajaților) ---
   app.get('/api/directory', { preHandler: requireUser }, async () => ({
     units: db.prepare('SELECT id, name, type, parent_id, sort FROM units ORDER BY sort, name').all(),
-    users: db.prepare('SELECT id, full_name, position, email, unit_id FROM users WHERE active = 1 ORDER BY full_name').all(),
+    users: db.prepare('SELECT id, full_name, position, email, phone, unit_id FROM users WHERE active = 1 ORDER BY full_name').all(),
   }));
 
   app.post('/api/units', { preHandler: requireAdmin }, async (req) => {
@@ -563,7 +565,7 @@ app.register(async (app) => {
 
   // --- utilizatori (admin) ---
   app.get('/api/users', { preHandler: requireAdmin }, async () =>
-    db.prepare('SELECT id, username, full_name, position, email, unit_id, role, active, must_change FROM users ORDER BY full_name').all()
+    db.prepare('SELECT id, username, full_name, position, email, phone, unit_id, role, active, must_change FROM users ORDER BY full_name').all()
   );
   app.post('/api/users', { preHandler: requireAdmin }, async (req) => {
     const body = req.body || {};
@@ -571,14 +573,14 @@ app.register(async (app) => {
     const password = readPassword(body.password);
     if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(u.username)) throw fail(400, 'Acest nume de utilizator există deja.');
     const r = db
-      .prepare('INSERT INTO users (username, full_name, position, email, unit_id, role, active, pass_hash, must_change) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)')
-      .run(u.username, u.full_name, u.position, u.email, u.unit_id, u.role, u.active, hashPassword(password));
+      .prepare('INSERT INTO users (username, full_name, position, email, phone, unit_id, role, active, pass_hash, must_change) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)')
+      .run(u.username, u.full_name, u.position, u.email, u.phone, u.unit_id, u.role, u.active, hashPassword(password));
     audit(req, 'utilizator creat', `${u.username} (${u.role})`);
     return { id: lastId(r) };
   });
 
   // --- import în masă: angajați + organigramă ---
-  // Primește rândurile citite din CSV în browser: { rows: [{ full_name, username, email, position,
+  // Primește rândurile citite din CSV în browser: { rows: [{ full_name, username, email, phone, position,
   // path: [denumiri de subdiviziuni, de sus în jos] }], parent_id, dry_run }.
   // Subdiviziunile se caută după denumire (fără diacritice și majuscule) și se creează doar cele care
   // lipsesc; conturile existente (același utilizator sau e-mail) rămân neatinse. Conturile noi au rolul
@@ -641,7 +643,7 @@ app.register(async (app) => {
         };
 
         const insertUser = db.prepare(
-          "INSERT INTO users (username, full_name, position, email, unit_id, role, active, pass_hash, must_change) VALUES (?, ?, ?, ?, ?, 'user', 1, ?, 1)"
+          "INSERT INTO users (username, full_name, position, email, phone, unit_id, role, active, pass_hash, must_change) VALUES (?, ?, ?, ?, ?, ?, 'user', 1, ?, 1)"
         );
         rows.forEach((row, i) => {
           const line = i + 1;
@@ -664,7 +666,7 @@ app.register(async (app) => {
           const path = Array.isArray(row.path) ? row.path.slice(0, 10) : [];
           const unitId = resolve(path);
           const password = dryRun ? '' : tempPassword();
-          insertUser.run(u.username, u.full_name, u.position, u.email, unitId, dryRun ? '-' : hashPassword(password));
+          insertUser.run(u.username, u.full_name, u.position, u.email, u.phone, unitId, dryRun ? '-' : hashPassword(password));
           result.created.push({ line, username: u.username, full_name: u.full_name, email: u.email, unit: path.map((p) => str(p, 200)).filter(Boolean).join(' › '), password });
         });
         if (dryRun) throw ROLLBACK;
@@ -696,8 +698,8 @@ app.register(async (app) => {
     }
     const turns = u.active ? [] : signTurnsOf(id);
     tx(() => {
-      db.prepare('UPDATE users SET username = ?, full_name = ?, position = ?, email = ?, unit_id = ?, role = ?, active = ? WHERE id = ?').run(
-        u.username, u.full_name, u.position, u.email, u.unit_id, u.role, u.active, id
+      db.prepare('UPDATE users SET username = ?, full_name = ?, position = ?, email = ?, phone = ?, unit_id = ?, role = ?, active = ? WHERE id = ?').run(
+        u.username, u.full_name, u.position, u.email, u.phone, u.unit_id, u.role, u.active, id
       );
       if (password) db.prepare('UPDATE users SET pass_hash = ?, must_change = 1 WHERE id = ?').run(hashPassword(password), id);
       // parolă resetată sau cont dezactivat: sesiunile vechi nu mai sunt valabile

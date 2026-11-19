@@ -124,6 +124,7 @@ const today = () => {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 };
+const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
 const fmtSize = (n) => (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const initials = (name) => String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0].toUpperCase()).join('') || '?';
 // Culoare stabilă pentru avatar, derivată din nume (aceeași persoană are mereu aceeași culoare).
@@ -311,6 +312,29 @@ const ForcedPassword = {
     </div>`,
 };
 
+// ---------- pictograme (comune) ----------
+const ICONS = {
+  unit: '<path d="M3 7h7l2 2h9v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M15 14h4M17 12v4"/>',
+  user: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M19 8v6M16 11h6"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/>',
+  phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
+  clip: '<path d="m21 11-8.6 8.6a5 5 0 0 1-7-7l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4L15.4 7"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+  pen: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 20h6"/>',
+  upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  tag: '<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="8" cy="8" r="1.5"/>',
+};
+const Icon = {
+  props: { name: String },
+  computed: { svg() { return ICONS[this.name] || ''; } },
+  template: /*html*/ `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" v-html="svg"></svg>`,
+};
+
 // ---------- documente ----------
 const docDay = (d) => Number(d.doc_date.slice(8));
 const docMon = (d) => MONTHS[Number(d.doc_date.slice(5, 7)) - 1].slice(0, 3) + ' ' + d.doc_date.slice(0, 4);
@@ -330,7 +354,7 @@ function mailNote(m) {
 }
 
 const DocForm = {
-  components: { Modal },
+  components: { Modal, Icon },
   props: { doc: Object },
   emits: ['close', 'saved'],
   data() {
@@ -441,91 +465,107 @@ const DocForm = {
   },
   template: /*html*/ `
     <Modal xl :title="doc ? 'Modifică documentul' : 'Document nou'" :busy="busy" @close="$emit('close')" @submit="submit">
-      <div class="form-cols">
-        <div>
-          <label class="field"><span>Denumirea documentului *</span><input v-model="form.title" maxlength="300" required autofocus /></label>
-          <div class="row">
+      <div class="dform">
+        <section class="fsec">
+          <div class="fsec-head"><span class="fnum">1</span><div><h3>Date generale</h3><p>Denumirea, data și numărul de înregistrare</p></div></div>
+          <div class="fgrid4">
+            <label class="field span2"><span>Denumirea documentului *</span><input v-model="form.title" maxlength="300" required autofocus /></label>
             <label class="field"><span>Data documentului *</span><input v-model="form.doc_date" type="date" required /></label>
             <label class="field"><span>Număr</span><input v-model="form.number" maxlength="60" placeholder="ex. 15-P" /></label>
+            <label class="field span4 mb0"><span>Descriere <span class="opt">(opțional)</span></span><textarea v-model="form.description" rows="2" maxlength="5000" placeholder="Pe scurt, despre ce este documentul"></textarea></label>
           </div>
-          <div class="section-title">Fișiere</div>
-          <div class="drop" :class="{ over: dragging }" @dragover.prevent="dragging = true" @dragleave="dragLeave" @drop.prevent="drop">
-            <input ref="files" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
-            Trageți fișierele aici sau
-            <button type="button" class="btn sm" @click="$refs.files.click()">Alegeți fișiere</button>
-            <div class="muted small">Mai multe fișiere pe același document (.pdf, .docx, .xlsx…), max. 50 MB fiecare</div>
-          </div>
-          <ul v-if="keptFiles.length || newFiles.length" class="filelist">
-            <li v-for="f in keptFiles" :key="'k' + f.id">
-              <span class="fname">{{ f.name }}</span><span class="muted small">{{ fmtSize(f.size) }}</span>
-              <button type="button" class="btn link danger" @click="form.removeFileIds.push(f.id)">Elimină</button>
-            </li>
-            <li v-for="(f, i) in newFiles" :key="'n' + i">
-              <span class="fname">{{ f.name }}</span><span class="badge new">nou</span><span class="muted small">{{ fmtSize(f.size) }}</span>
-              <button type="button" class="btn link danger" @click="newFiles.splice(i, 1)">Elimină</button>
-            </li>
-          </ul>
-        </div>
+        </section>
 
-        <div>
-          <div class="section-title">Etichete</div>
-          <div v-if="!store.categories.length" class="muted small">Administratorul nu a definit încă nicio categorie.</div>
-          <div v-for="c in store.categories" :key="c.id" class="pick-group">
-            <div>{{ c.name }}</div>
-            <div class="pick">
-              <button v-for="t in c.tags" :key="t.id" type="button" :class="{ on: form.tagIds.includes(t.id) }" :style="tagStyle(c, t)" @click="toggle(form.tagIds, t.id)">{{ t.name }}</button>
-              <span v-if="!c.tags.length" class="muted small">fără etichete</span>
+        <div class="fgrid2">
+          <section class="fsec">
+            <div class="fsec-head"><span class="fnum">2</span><div><h3>Fișiere</h3><p>.pdf, .docx, .xlsx… cel mult 50 MB fiecare</p></div><span v-if="keptFiles.length + newFiles.length" class="pill">{{ keptFiles.length + newFiles.length }}</span></div>
+            <div class="drop" :class="{ over: dragging }" @dragover.prevent="dragging = true" @dragleave="dragLeave" @drop.prevent="drop" @click="$refs.files.click()">
+              <input ref="files" type="file" multiple hidden @change="addFiles($event.target.files); $event.target.value = ''" />
+              <Icon name="upload" />
+              <span>Trageți fișierele aici sau <b class="linklike">alegeți de pe calculator</b></span>
             </div>
-          </div>
-
-          <div class="section-title spaced">Cine poate vedea documentul</div>
-          <label class="check"><input type="radio" value="all" v-model="form.visibility" /> Toți angajații</label>
-          <label class="check"><input type="radio" value="restricted" v-model="form.visibility" /> Doar subdiviziunile și persoanele selectate</label>
-          <div v-if="form.visibility === 'restricted'" class="vis-box">
-            <div class="vis-cols">
-              <div>
-                <b class="small">Subdiviziuni</b>
-                <div class="scroll">
-                  <label v-for="u in units" :key="u.id" class="check" :style="{ paddingLeft: u.depth * 14 + 'px' }">
-                    <input type="checkbox" :checked="form.unitIds.includes(u.id)" @change="toggle(form.unitIds, u.id)" /> {{ u.name }}
-                  </label>
-                </div>
-              </div>
-              <div>
-                <b class="small">Persoane</b>
-                <input v-model="userFilter" placeholder="Caută după nume…" class="mt6" />
-                <div class="scroll">
-                  <label v-for="u in people" :key="u.id" class="check">
-                    <input type="checkbox" :checked="form.userIds.includes(u.id)" @change="toggle(form.userIds, u.id)" /> {{ u.full_name }}
-                  </label>
-                </div>
-              </div>
-            </div>
-            <p class="muted small hint">O subdiviziune include automat și cele din subordinea ei. Autorul și administratorii văd documentul întotdeauna.</p>
-          </div>
-
-          <div class="section-title spaced">Semnare</div>
-          <label class="check"><input type="checkbox" v-model="needsSign" /> Documentul trebuie semnat digital, pe rând</label>
-          <div v-if="needsSign" class="vis-box">
-            <b class="small">Ordinea semnării</b>
-            <div v-if="!form.signerIds.length" class="muted small mt4">Adăugați semnatarii din lista de mai jos, în ordinea în care trebuie să semneze.</div>
-            <ol class="signorder">
-              <li v-for="(id, i) in form.signerIds" :key="id">
-                <span class="step">{{ i + 1 }}</span>
-                <span class="fname">{{ personName(id) }} <span v-if="hasSigned(id)" class="muted small">(a semnat)</span><span v-else-if="inactive(id)" class="warn small">(cont dezactivat — eliminați sau înlocuiți)</span></span>
-                <button type="button" class="btn link" :disabled="i === 0" @click="move(i, -1)" aria-label="Mută mai sus">↑</button>
-                <button type="button" class="btn link" :disabled="i === form.signerIds.length - 1" @click="move(i, 1)" aria-label="Mută mai jos">↓</button>
-                <button type="button" class="btn link danger" :disabled="hasSigned(id)" @click="form.signerIds.splice(i, 1)">Elimină</button>
+            <ul v-if="keptFiles.length || newFiles.length" class="filelist">
+              <li v-for="f in keptFiles" :key="'k' + f.id">
+                <span class="fname">{{ f.name }}</span><span class="muted small">{{ fmtSize(f.size) }}</span>
+                <button type="button" class="icon-btn danger" title="Elimină" aria-label="Elimină fișierul" @click="form.removeFileIds.push(f.id)"><Icon name="trash" /></button>
               </li>
-            </ol>
-            <input v-model="signFilter" placeholder="Adaugă semnatar: caută după nume…" class="mt6" />
-            <div class="scroll short">
-              <button v-for="u in signCandidates" :key="u.id" type="button" class="side-item" @click="form.signerIds.push(u.id)">
-                <span>+ {{ u.full_name }} <span v-if="!u.email" class="muted small">(fără e-mail)</span></span>
-              </button>
+              <li v-for="(f, i) in newFiles" :key="'n' + i">
+                <span class="fname">{{ f.name }}</span><span class="badge new">nou</span><span class="muted small">{{ fmtSize(f.size) }}</span>
+                <button type="button" class="icon-btn danger" title="Elimină" aria-label="Elimină fișierul" @click="newFiles.splice(i, 1)"><Icon name="trash" /></button>
+              </li>
+            </ul>
+          </section>
+
+          <section class="fsec">
+            <div class="fsec-head"><span class="fnum">3</span><div><h3>Etichete</h3><p>Ajută la găsirea documentului în listă</p></div><span v-if="form.tagIds.length" class="pill">{{ form.tagIds.length }}</span></div>
+            <div v-if="!store.categories.length" class="muted small">Administratorul nu a definit încă nicio categorie.</div>
+            <div v-for="c in store.categories" :key="c.id" class="pick-group">
+              <div><i class="dot" :style="{ background: c.color }"></i>{{ c.name }}</div>
+              <div class="pick">
+                <button v-for="t in c.tags" :key="t.id" type="button" :class="{ on: form.tagIds.includes(t.id) }" :style="tagStyle(c, t)" @click="toggle(form.tagIds, t.id)">{{ t.name }}</button>
+                <span v-if="!c.tags.length" class="muted small">fără etichete</span>
+              </div>
             </div>
-            <p class="muted small hint">Fiecare semnatar descarcă versiunea curentă, o semnează digital și o încarcă înapoi; apoi vine rândul următorului. {{ mailHint }}</p>
-          </div>
+          </section>
+
+          <section class="fsec">
+            <div class="fsec-head"><span class="fnum">4</span><div><h3>Acces</h3><p>Cine poate vedea documentul</p></div></div>
+            <div class="seg full" role="radiogroup" aria-label="Cine poate vedea documentul">
+              <button type="button" role="radio" :aria-checked="form.visibility === 'all' ? 'true' : 'false'" :class="{ on: form.visibility === 'all' }" @click="form.visibility = 'all'"><Icon name="globe" />Toți angajații</button>
+              <button type="button" role="radio" :aria-checked="form.visibility === 'restricted' ? 'true' : 'false'" :class="{ on: form.visibility === 'restricted' }" @click="form.visibility = 'restricted'"><Icon name="lock" />Doar cei selectați</button>
+            </div>
+            <template v-if="form.visibility === 'restricted'">
+              <div class="vis-cols mt10">
+                <div class="pickbox">
+                  <div class="pickbox-head"><b class="small">Subdiviziuni</b><span class="muted small">{{ form.unitIds.length }}</span></div>
+                  <div class="scroll">
+                    <label v-for="u in units" :key="u.id" class="check" :style="{ paddingLeft: u.depth * 14 + 'px' }">
+                      <input type="checkbox" :checked="form.unitIds.includes(u.id)" @change="toggle(form.unitIds, u.id)" /> {{ u.name }}
+                    </label>
+                  </div>
+                </div>
+                <div class="pickbox">
+                  <div class="pickbox-head"><b class="small">Persoane</b><span class="muted small">{{ form.userIds.length }}</span></div>
+                  <input v-model="userFilter" placeholder="Caută după nume…" />
+                  <div class="scroll">
+                    <label v-for="u in people" :key="u.id" class="check">
+                      <input type="checkbox" :checked="form.userIds.includes(u.id)" @change="toggle(form.userIds, u.id)" /> {{ u.full_name }}
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <p class="muted small hint">O subdiviziune include automat și cele din subordinea ei. Autorul și administratorii văd documentul întotdeauna.</p>
+            </template>
+            <p v-else class="muted small hint">Documentul apare în lista tuturor angajaților.</p>
+          </section>
+
+          <section class="fsec">
+            <div class="fsec-head"><span class="fnum">5</span><div><h3>Semnare</h3><p>Semnătură digitală, pe rând</p></div>
+              <label class="switch" title="Documentul trebuie semnat digital"><input type="checkbox" v-model="needsSign" aria-label="Documentul trebuie semnat digital" /><span></span></label>
+            </div>
+            <template v-if="needsSign">
+              <ol v-if="form.signerIds.length" class="signorder">
+                <li v-for="(id, i) in form.signerIds" :key="id">
+                  <span class="step">{{ i + 1 }}</span>
+                  <span class="fname">{{ personName(id) }} <span v-if="hasSigned(id)" class="muted small">(a semnat)</span><span v-else-if="inactive(id)" class="warn small">(cont dezactivat — eliminați sau înlocuiți)</span></span>
+                  <button type="button" class="icon-btn" :disabled="i === 0" @click="move(i, -1)" title="Mută mai sus" aria-label="Mută mai sus">↑</button>
+                  <button type="button" class="icon-btn" :disabled="i === form.signerIds.length - 1" @click="move(i, 1)" title="Mută mai jos" aria-label="Mută mai jos">↓</button>
+                  <button type="button" class="icon-btn danger" :disabled="hasSigned(id)" @click="form.signerIds.splice(i, 1)" title="Elimină" aria-label="Elimină semnatarul"><Icon name="trash" /></button>
+                </li>
+              </ol>
+              <p v-else class="muted small">Adăugați semnatarii în ordinea în care trebuie să semneze.</p>
+              <div class="pickbox mt10">
+                <input v-model="signFilter" placeholder="Adaugă semnatar: caută după nume…" />
+                <div class="scroll short">
+                  <button v-for="u in signCandidates" :key="u.id" type="button" class="side-item" @click="form.signerIds.push(u.id)">
+                    <span>+ {{ u.full_name }} <span v-if="!u.email" class="muted small">(fără e-mail)</span></span>
+                  </button>
+                </div>
+              </div>
+              <p class="muted small hint">Fiecare semnatar descarcă versiunea curentă, o semnează digital și o încarcă înapoi; apoi vine rândul următorului. {{ mailHint }}</p>
+            </template>
+            <p v-else class="muted small hint">Activați dacă documentul trebuie semnat de una sau mai multe persoane, în ordine.</p>
+          </section>
         </div>
       </div>
     </Modal>`,
@@ -702,14 +742,49 @@ const SignatureCheck = {
 const fmtDateTime = (s) => new Date(s.replace(' ', 'T') + 'Z').toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' });
 
 const isPdfName = (n) => /\.pdf$/i.test(n);
+// Rândul din listă arată doar esențialul, pe coloane fixe (data, denumirea, starea, numărul de fișiere);
+// detaliile, fișierele, semnarea și acțiunile apar la extinderea rândului.
+const DOC_TAGS_IN_ROW = 3;
 const DocCard = {
-  components: { FileLink, Modal, SignatureCheck },
-  props: { doc: Object },
+  components: { FileLink, Modal, SignatureCheck, Icon },
+  props: { doc: Object, startOpen: Boolean },
   emits: ['edit'],
-  data: () => ({ busy: false, reminding: false, signing: '', certPick: null, verifying: null }),
+  data() {
+    return { open: this.startOpen, busy: false, reminding: false, signing: '', certPick: null, verifying: null };
+  },
   computed: {
     store: () => store,
     tags: () => tagIndex(),
+    validTags() {
+      return this.doc.tagIds.filter((id) => this.tags.has(id));
+    },
+    shownTags() {
+      return this.validTags.slice(0, DOC_TAGS_IN_ROW);
+    },
+    hiddenTags() {
+      return Math.max(0, this.validTags.length - DOC_TAGS_IN_ROW);
+    },
+    fileCount() {
+      return this.originals.length + this.signedLatest.length;
+    },
+    fullDate() {
+      const d = this.doc.doc_date;
+      return Number(d.slice(8)) + ' ' + MONTHS[Number(d.slice(5, 7)) - 1] + ' ' + d.slice(0, 4);
+    },
+    // o singură stare pe rând, în ordinea importanței
+    status() {
+      const d = this.doc;
+      if (d.mySign === 'pending') return { label: 'De semnat de dvs.', cls: 'amber solid', icon: 'pen' };
+      if (d.signers.length && d.signers.some((s) => !s.active && !s.signed_at)) return { label: 'Semnare blocată', cls: 'red' };
+      if (d.signers.length && this.pending) return { label: 'Semnare ' + (d.signers.length - this.pending) + '/' + d.signers.length, cls: 'amber' };
+      if (d.signers.length) return { label: 'Semnat', cls: 'green', icon: 'pen' };
+      if (d.visibility === 'restricted') return { label: 'Acces limitat', cls: 'gray', icon: 'lock' };
+      return null;
+    },
+    hasActions() {
+      const d = this.doc;
+      return d.unseen || d.canEdit || d.canDelete || this.signedPdfs.length > 0;
+    },
     pending() {
       return this.doc.signers.filter((s) => !s.signed_at).length;
     },
@@ -851,66 +926,94 @@ const DocCard = {
     },
   },
   template: /*html*/ `
-    <article class="card doc" :class="{ unseen: doc.unseen }">
-      <div class="doc-date"><b>{{ docDay(doc) }}</b><span>{{ docMon(doc) }}</span></div>
-      <div class="doc-body">
-        <div class="doc-line">
-          <div class="doc-title" :title="doc.title">
-            <span v-if="doc.unseen" class="badge new">Nou</span>
-            {{ doc.title }}<span v-if="doc.number" class="doc-nr">nr. {{ doc.number }}</span>
-          </div>
-          <div class="doc-meta">
-            <template v-for="id in doc.tagIds" :key="id">
-              <span v-if="tags.get(id)" class="chip" :style="chipStyle(tags.get(id).color)">{{ tags.get(id).name }}</span>
+    <article class="dcard" :class="{ unseen: doc.unseen, open, turn: doc.mySign === 'pending' }">
+      <button type="button" class="drow" :aria-expanded="open ? 'true' : 'false'" @click="open = !open">
+        <span class="d-date"><b>{{ docDay(doc) }}</b><span>{{ docMon(doc) }}</span></span>
+        <span class="d-main">
+          <span class="d-title" :title="doc.title"><i v-if="doc.unseen" class="d-dot" title="Document nou"></i>{{ doc.title }}</span>
+          <span class="d-sub">
+            <span class="d-nr">{{ doc.number ? 'nr. ' + doc.number : 'fără număr' }}</span>
+            <template v-for="id in shownTags" :key="id"><span class="chip" :style="chipStyle(tags.get(id).color)">{{ tags.get(id).name }}</span></template>
+            <span v-if="hiddenTags" class="chip more">+{{ hiddenTags }}</span>
+          </span>
+        </span>
+        <span class="d-status"><span v-if="status" class="pill" :class="status.cls"><Icon v-if="status.icon" :name="status.icon" />{{ status.label }}</span></span>
+        <span class="d-files" :title="fileCount ? fileCount + (fileCount === 1 ? ' fișier' : ' fișiere') : 'Fără fișiere'"><Icon name="clip" /><b>{{ fileCount }}</b></span>
+        <span class="d-chev"><Icon name="chevron" /></span>
+      </button>
+
+      <div v-if="open" class="dpanel">
+        <div class="dgrid">
+          <section class="dsec">
+            <h4><Icon name="file" />Fișiere</h4>
+            <div v-if="originals.length" class="dfiles"><FileLink v-for="f in originals" :key="f.id" :file="f" @open="opened" /></div>
+            <p v-else class="muted small">Nu sunt fișiere atașate.</p>
+            <template v-if="signedLatest.length">
+              <h4 class="mt14"><Icon name="pen" />Versiunea semnată</h4>
+              <div class="dfiles"><FileLink v-for="f in signedLatest" :key="f.id" :file="f" @open="opened" /></div>
+              <p class="muted small mt4">Încărcată de {{ signedLatest[0].signed_by_name }}<template v-if="signedLatest[0].created_at">, {{ fmtDateTime(signedLatest[0].created_at) }}</template></p>
             </template>
-            <span class="chip vis" :title="doc.author ? 'Adăugat de ' + doc.author : ''">{{ visLabel(doc) }}</span>
-          </div>
-        </div>
-        <div v-if="originals.length || signedLatest.length" class="files">
-          <FileLink v-for="f in originals" :key="f.id" :file="f" @open="opened" />
-          <template v-if="signedLatest.length">
-            <span class="files-sep" :title="'Ultima versiune semnată, încărcată de ' + signedLatest[0].signed_by_name">semnat:</span>
-            <FileLink v-for="f in signedLatest" :key="f.id" :file="f" @open="opened" />
-          </template>
+          </section>
+          <section class="dsec">
+            <h4><Icon name="tag" />Detalii</h4>
+            <dl class="dmeta">
+              <dt>Data</dt><dd>{{ fullDate }}</dd>
+              <dt>Număr</dt><dd>{{ doc.number || '—' }}</dd>
+              <dt>Adăugat de</dt><dd>{{ doc.author || '—' }}</dd>
+              <dt>Acces</dt><dd>{{ visLabel(doc) }}</dd>
+              <dt>Etichete</dt>
+              <dd>
+                <span v-if="!validTags.length" class="muted">—</span>
+                <span v-else class="dchips"><span v-for="id in validTags" :key="id" class="chip" :style="chipStyle(tags.get(id).color)">{{ tags.get(id).name }}</span></span>
+              </dd>
+            </dl>
+            <p v-if="doc.description" class="ddesc">{{ doc.description }}</p>
+          </section>
         </div>
 
-        <div v-if="doc.signers.length" class="signline" :class="{ done: !pending }">
-          <span class="sign-state">{{ pending ? 'Semnare' : 'Semnat' }} {{ doc.signers.length - pending }}/{{ doc.signers.length }}</span>
-          <ol class="chain">
-            <li v-for="(s, i) in doc.signers" :key="s.id" :class="{ ok: s.signed_at, turn: s.id === doc.signTurn, blocked: !s.active && !s.signed_at }" :title="signerTitle(s)">
-              <span class="step">{{ s.signed_at ? '✓' : i + 1 }}</span>{{ s.name }}<span v-if="!s.active && !s.signed_at" class="warn"> ⚠</span>
+        <section v-if="doc.signers.length" class="dsec dsign" :class="{ done: !pending }">
+          <h4><Icon name="pen" />Semnare <span class="pill" :class="pending ? 'amber' : 'green'">{{ doc.signers.length - pending }} din {{ doc.signers.length }}</span></h4>
+          <ol class="stepper">
+            <li v-for="(s, i) in doc.signers" :key="s.id" :class="{ ok: s.signed_at, turn: s.id === doc.signTurn, blocked: !s.active && !s.signed_at }">
+              <span class="st-dot">{{ s.signed_at ? '✓' : i + 1 }}</span>
+              <span class="st-txt"><b>{{ s.name }}</b><span class="small">{{ signerTitle(s) }}</span></span>
             </li>
           </ol>
-          <span class="sign-tools">
-            <button v-if="signedPdfs.length" class="btn link sm" @click="verifying = signedPdfs">Verifică semnăturile</button>
-            <button v-if="doc.canEdit && pending && store.me.mailEnabled" class="btn link sm" :disabled="reminding" @click="remind">Retrimite e-mail</button>
-          </span>
-        </div>
-        <div v-if="doc.mySign === 'pending'" class="myturn">
-          <b>Este rândul dvs. să semnați.</b>
-          <span class="muted small">{{ canToken ? 'Semnați cu tokenul prin MoldSign sau încărcați fișierul semnat în altă aplicație.' : 'Descărcați versiunea curentă, semnați-o digital, apoi încărcați fișierul semnat.' }}</span>
-          <div class="files">
-            <FileLink v-for="f in latest" :key="f.id" :file="f" @open="opened" />
-            <input ref="signed" type="file" multiple hidden @change="uploadSigned" />
-            <button v-if="canToken" class="btn primary sm" :disabled="busy" @click="signWithToken">{{ signing || 'Semnează cu MoldSign' }}</button>
-            <button class="btn sm" :class="{ primary: !canToken }" :disabled="busy" @click="$refs.signed.click()">{{ busy && !signing ? 'Se încarcă…' : 'Încarcă documentul semnat' }}</button>
+          <div v-if="doc.mySign === 'pending'" class="myturn">
+            <div class="myturn-txt">
+              <b>Este rândul dvs. să semnați.</b>
+              <span class="muted small">{{ canToken ? 'Semnați cu tokenul prin MoldSign sau încărcați fișierul semnat în altă aplicație.' : 'Descărcați versiunea curentă, semnați-o digital, apoi încărcați fișierul semnat.' }}</span>
+            </div>
+            <div class="myturn-act">
+              <input ref="signed" type="file" multiple hidden @change="uploadSigned" />
+              <button type="button" class="btn" :class="{ primary: !canToken }" :disabled="busy" @click="$refs.signed.click()"><Icon name="upload" />{{ busy && !signing ? 'Se încarcă…' : 'Încarcă fișierul semnat' }}</button>
+              <button v-if="canToken" type="button" class="btn primary" :disabled="busy" @click="signWithToken"><Icon name="pen" />{{ signing || 'Semnează cu MoldSign' }}</button>
+            </div>
           </div>
-        </div>
-        <Modal v-if="certPick" title="Semnare cu MoldSign" ok-label="Semnează" @close="pickCert(false)" @submit="pickCert(true)">
-          <p class="dialog-msg">„{{ certPick.names }}” va fi semnat electronic. După ce apăsați „Semnează”, MoldSign vă cere codul PIN al tokenului.</p>
-          <div class="section-title">Certificatul de semnare</div>
-          <label v-for="(c, i) in certPick.certs" :key="i" class="check certopt">
-            <input type="radio" name="cert" :value="i" v-model="certPick.chosen" />
-            <span><b>{{ certLabel(c) }}</b><span class="muted small"><template v-if="certIssuer(c)"> · emis de {{ certIssuer(c) }}</template></span></span>
-          </label>
-        </Modal>
-        <SignatureCheck v-if="verifying" :files="verifying" @close="verifying = null" />
+        </section>
+
+        <footer v-if="hasActions" class="dfoot">
+          <div class="dfoot-side">
+            <button v-if="signedPdfs.length" type="button" class="btn sm" @click="verifying = signedPdfs">Verifică semnăturile</button>
+            <button v-if="doc.canEdit && pending && store.me.mailEnabled" type="button" class="btn sm" :disabled="reminding" @click="remind">Retrimite e-mailul</button>
+          </div>
+          <div class="dfoot-side">
+            <button v-if="doc.unseen" type="button" class="btn sm" @click="markSeen">Marchează ca văzut</button>
+            <button v-if="doc.canEdit" type="button" class="btn sm" @click="$emit('edit', doc)"><Icon name="edit" />Modifică</button>
+            <button v-if="doc.canDelete" type="button" class="btn sm danger" @click="remove"><Icon name="trash" />Șterge</button>
+          </div>
+        </footer>
       </div>
-      <div v-if="doc.canEdit || doc.unseen" class="doc-actions">
-        <button v-if="doc.unseen" class="btn link" @click="markSeen">Văzut</button>
-        <button v-if="doc.canEdit" class="btn link" @click="$emit('edit', doc)">Modifică</button>
-        <button v-if="doc.canDelete" class="btn link danger" @click="remove">Șterge</button>
-      </div>
+
+      <Modal v-if="certPick" title="Semnare cu MoldSign" ok-label="Semnează" @close="pickCert(false)" @submit="pickCert(true)">
+        <p class="dialog-msg">„{{ certPick.names }}” va fi semnat electronic. După ce apăsați „Semnează”, MoldSign vă cere codul PIN al tokenului.</p>
+        <div class="section-title">Certificatul de semnare</div>
+        <label v-for="(c, i) in certPick.certs" :key="i" class="check certopt">
+          <input type="radio" name="cert" :value="i" v-model="certPick.chosen" />
+          <span><b>{{ certLabel(c) }}</b><span class="muted small"><template v-if="certIssuer(c)"> · emis de {{ certIssuer(c) }}</template></span></span>
+        </label>
+      </Modal>
+      <SignatureCheck v-if="verifying" :files="verifying" @close="verifying = null" />
     </article>`,
 };
 
@@ -964,14 +1067,18 @@ const DocsView = {
     },
   },
   methods: {
+    plural,
     isSel(type, id) {
       return this.sel.type === type && this.sel.id === id;
     },
   },
   template: /*html*/ `
     <div class="page-head">
-      <h1>Documente</h1>
-      <button v-if="canAdd" class="btn primary" @click="editing = null">+ Adaugă document</button>
+      <div>
+        <h1>Documente</h1>
+        <p class="muted page-sub">{{ filtered.length === docs.length ? plural(docs.length, 'document', 'documente') : filtered.length + ' din ' + plural(docs.length, 'document', 'documente') }}</p>
+      </div>
+      <button v-if="canAdd" class="btn primary" @click="editing = null">+ Document nou</button>
     </div>
     <div class="docs">
       <aside class="card side">
@@ -1000,6 +1107,7 @@ const DocsView = {
         <div v-if="store.docsLoaded && !groups.length" class="card empty">
           {{ docs.length ? 'Niciun document nu corespunde filtrelor.' : 'Încă nu există documente disponibile pentru dvs.' }}
         </div>
+        <div v-if="groups.length" class="dhead" aria-hidden="true"><span>Data</span><span>Document</span><span>Stare</span><span>Fișiere</span><span></span></div>
         <template v-for="g in groups" :key="g.key">
           <div class="month">{{ g.label }}</div>
           <DocCard v-for="d in g.docs" :key="d.id" :doc="d" @edit="editing = $event" />
@@ -1033,7 +1141,7 @@ const InboxView = {
     <div v-if="!toSign.length && !fresh.length" class="card empty">Nu aveți notificări. Sunteți la zi cu toate documentele.</div>
     <template v-if="toSign.length">
       <div class="month">Așteaptă semnătura dvs. ({{ toSign.length }})</div>
-      <DocCard v-for="d in toSign" :key="d.id" :doc="d" @edit="editing = $event" />
+      <DocCard v-for="d in toSign" :key="d.id" :doc="d" start-open @edit="editing = $event" />
     </template>
     <template v-if="fresh.length">
       <div class="month">Documente noi, încă nevăzute ({{ fresh.length }})</div>
@@ -1114,6 +1222,7 @@ const UserForm = {
         username: u ? u.username : '',
         position: u ? u.position : '',
         email: u ? u.email : '',
+        phone: u ? u.phone || '' : '',
         unit_id: u ? u.unit_id : this.unitId || null,
         role: u ? u.role : 'user',
         active: u ? !!u.active : true,
@@ -1140,16 +1249,19 @@ const UserForm = {
       if (!ok) return;
       if (r && r.blockedDocs) {
         toast('Contul a fost dezactivat. ' + r.blockedDocs + ' document(e) așteaptă semnătura acestei persoane: autorii trebuie să modifice lanțul de semnare.', true);
-      } else toast(this.user ? 'Utilizatorul a fost actualizat.' : 'Utilizatorul a fost adăugat.');
+      } else toast(this.user ? 'Datele angajatului au fost actualizate.' : 'Angajatul a fost adăugat.');
       this.$emit('saved');
     },
   },
   template: /*html*/ `
-    <Modal :title="user ? 'Modifică utilizatorul' : 'Utilizator nou'" :busy="busy" @close="$emit('close')" @submit="submit">
-      <label class="field"><span>Nume și prenume *</span><input v-model="form.full_name" maxlength="150" required autofocus /></label>
+    <Modal :title="user ? 'Modifică angajatul' : 'Angajat nou'" :busy="busy" @close="$emit('close')" @submit="submit">
       <div class="row">
+        <label class="field"><span>Nume și prenume *</span><input v-model="form.full_name" maxlength="150" required autofocus /></label>
         <label class="field"><span>Funcția</span><input v-model="form.position" maxlength="150" placeholder="ex. Consultant principal" /></label>
+      </div>
+      <div class="row">
         <label class="field"><span>E-mail</span><input v-model="form.email" type="email" maxlength="150" /></label>
+        <label class="field"><span>Telefon</span><input v-model="form.phone" type="tel" maxlength="40" placeholder="ex. 022 820 650" /></label>
       </div>
       <label class="field"><span>Subdiviziunea (locul în organigramă)</span>
         <select v-model="form.unit_id">
@@ -1180,7 +1292,7 @@ const UserForm = {
 
 // ---------- import în masă al angajaților (CSV) ----------
 // Coloane recunoscute (antet, fără diacritice/majuscule): Nume, Prenume, Funcția, E-mail,
-// Utilizator, Subdiviziune. În locul coloanelor Nume + Prenume se acceptă și una singură,
+// Telefon, Utilizator, Subdiviziune. În locul coloanelor Nume + Prenume se acceptă și una singură,
 // „Numele, prenumele” / „Nume și prenume” (ca în lista de telefoane: întâi numele de familie).
 // „Subdiviziune” este calea în organigramă, de sus în jos, cu „>” între niveluri. Lipsa coloanei
 // „Utilizator” = prenume.nume fără diacritice. Fișierul poate veni din Excel așa cum l-a salvat:
@@ -1238,6 +1350,7 @@ function headerColumns(head) {
     email: mail >= 0 ? mail : find((k) => k === 'user principal name' || k === 'userprincipalname'),
     user: find((k) => ['utilizator', 'nume de utilizator', 'username', 'login'].includes(k)),
     unit: find((k) => k.startsWith('subdiviziun') || k.startsWith('unitate') || k === 'department'),
+    phone: find((k) => k.startsWith('telefon') || ['tel', 'phone', 'office phone', 'mobile phone', 'business phone'].includes(k)),
     // conturile șterse din Microsoft 365 au completată data ștergerii: nu le importăm
     deleted: find((k) => k.startsWith('soft deletion')),
   };
@@ -1294,6 +1407,7 @@ function peopleFromCsv(text) {
         full_name: [prenume, nume].filter(Boolean).join(' '),
         username: at(r, c.user) || [slugName(prenume), slugName(nume)].filter(Boolean).join('.'),
         email: at(r, c.email),
+        phone: at(r, c.phone),
         position: at(r, c.functia),
         path: at(r, c.unit).split(/\s*[>›]\s*/).filter(Boolean),
       };
@@ -1376,7 +1490,7 @@ const ImportPeople = {
   template: /*html*/ `
     <Modal title="Import angajați din CSV" xl :busy="busy" :ok-label="okLabel" busy-label="Se verifică…" :cancel-label="result ? '' : 'Anulează'" @close="close" @submit="submit">
       <template v-if="!result">
-        <p class="dialog-msg">Coloane: <b>Nume</b>, <b>Prenume</b>, Funcția, E-mail, Utilizator, Subdiviziune (calea în organigramă, cu „&gt;” între niveluri). Subdiviziunile lipsă se creează; conturile existente nu se modifică. Fiecare cont nou primește o parolă temporară, de schimbat la prima autentificare.</p>
+        <p class="dialog-msg">Coloane: <b>Nume</b>, <b>Prenume</b>, Funcția, E-mail, Telefon, Utilizator, Subdiviziune (calea în organigramă, cu „&gt;” între niveluri). Subdiviziunile lipsă se creează; conturile existente nu se modifică. Fiecare cont nou primește o parolă temporară, de schimbat la prima autentificare.</p>
         <div class="row">
           <label class="field"><span>Fișierul CSV</span><input type="file" accept=".csv,.txt,text/csv,text/plain" @change="pick" /></label>
           <label class="field"><span>Plasează subdiviziunile noi de nivel superior sub</span>
@@ -1393,8 +1507,8 @@ const ImportPeople = {
           <div v-if="preview.skipped.length" class="small"><b>Omise:</b><ul><li v-for="s in preview.skipped" :key="s.line">rândul {{ s.line }} {{ s.name }}: {{ s.reason }}</li></ul></div>
           <div class="table-wrap import-preview">
             <table>
-              <thead><tr><th>Nume și prenume</th><th>Utilizator</th><th>Funcția</th><th>E-mail</th><th>Subdiviziune</th></tr></thead>
-              <tbody><tr v-for="c in preview.created" :key="c.line"><td>{{ c.full_name }}</td><td><code class="uname">{{ c.username }}</code></td><td>{{ rows[c.line - 1].position || '—' }}</td><td>{{ c.email || '—' }}</td><td>{{ c.unit || '—' }}</td></tr></tbody>
+              <thead><tr><th>Nume și prenume</th><th>Utilizator</th><th>Funcția</th><th>E-mail</th><th>Telefon</th><th>Subdiviziune</th></tr></thead>
+              <tbody><tr v-for="c in preview.created" :key="c.line"><td>{{ c.full_name }}</td><td><code class="uname">{{ c.username }}</code></td><td>{{ rows[c.line - 1].position || '—' }}</td><td>{{ c.email || '—' }}</td><td class="nowrap">{{ rows[c.line - 1].phone || '—' }}</td><td>{{ c.unit || '—' }}</td></tr></tbody>
             </table>
           </div>
         </template>
@@ -1405,84 +1519,6 @@ const ImportPeople = {
         <button type="button" class="btn primary" @click="downloadPasswords">Descarcă parolele temporare (CSV)</button>
       </template>
     </Modal>`,
-};
-
-const UsersView = {
-  components: { UserForm, ImportPeople },
-  data: () => ({ users: [], editing: undefined, q: '', loaded: false, importing: false }),
-  computed: {
-    store: () => store,
-    shown() {
-      const q = this.q.trim().toLowerCase();
-      if (!q) return this.users;
-      return this.users.filter((u) => [u.full_name, u.username, u.position, u.email, u.unit_id ? unitName(u.unit_id) : ''].join(' ').toLowerCase().includes(q));
-    },
-  },
-  methods: {
-    unitName,
-    initials,
-    avatarStyle,
-    role: (r) => ROLES[r],
-    async load() {
-      await run(async () => (this.users = await api('/api/users')));
-      this.loaded = true;
-    },
-    async saved() {
-      this.editing = undefined;
-      await this.load();
-    },
-    async remove(u) {
-      const ok = await ask({
-        title: 'Ștergeți contul?',
-        message: 'Contul „' + u.full_name + '” va fi șters definitiv. Documentele adăugate de această persoană rămân în sistem. Dacă persoana doar a plecat din instituție, puteți dezactiva contul în loc să îl ștergeți.',
-        okLabel: 'Șterge contul',
-        danger: true,
-      });
-      if (!ok) return;
-      const done = await run(async () => {
-        await api('/api/users/' + u.id, { method: 'DELETE' });
-        await loadShared();
-      }, 'Utilizatorul a fost șters.');
-      if (done) this.load();
-    },
-  },
-  mounted() {
-    this.load();
-  },
-  template: /*html*/ `
-    <div class="page-head">
-      <div>
-        <h1>Utilizatori</h1>
-        <p class="muted page-sub">{{ users.length }} conturi, dintre care {{ users.filter((u) => u.active).length }} active.</p>
-      </div>
-      <div class="head-actions">
-        <input v-model="q" type="search" class="search-sm" placeholder="Caută după nume, funcție, subdiviziune…" aria-label="Caută utilizatori" />
-        <button class="btn" @click="importing = true">Importă din CSV…</button>
-        <button class="btn primary" @click="editing = null">+ Adaugă utilizator</button>
-      </div>
-    </div>
-    <div class="card table-wrap">
-      <table>
-        <thead><tr><th>Nume și prenume</th><th>Utilizator</th><th>Funcția</th><th>Subdiviziunea</th><th>Rol</th><th>Stare</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="u in shown" :key="u.id" :class="{ off: !u.active }">
-            <td><span class="who"><span class="avatar sm" :style="avatarStyle(u.full_name)">{{ initials(u.full_name) }}</span><b>{{ u.full_name }}</b></span></td>
-            <td><code class="uname">{{ u.username }}</code></td>
-            <td>{{ u.position || '—' }}</td>
-            <td>{{ u.unit_id ? unitName(u.unit_id) : '—' }}</td>
-            <td><span class="badge" :class="{ gray: u.role === 'user', dark: u.role === 'admin' }">{{ role(u.role) }}</span></td>
-            <td><span class="status" :class="{ on: u.active }">{{ u.active ? (u.must_change ? 'Activ · parolă de schimbat' : 'Activ') : 'Dezactivat' }}</span></td>
-            <td class="row-actions">
-              <button class="btn link" @click="editing = u">Modifică</button>
-              <button v-if="u.id !== store.me.id" class="btn link danger" @click="remove(u)">Șterge</button>
-            </td>
-          </tr>
-          <tr v-if="loaded && !shown.length"><td colspan="7" class="empty-row">{{ users.length ? 'Niciun utilizator nu corespunde căutării.' : 'Nu există utilizatori.' }}</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <UserForm v-if="editing !== undefined" :user="editing" @close="editing = undefined" @saved="saved" />
-    <ImportPeople v-if="importing" @close="importing = false" @done="(importing = false), load()" />`,
 };
 
 // ---------- organigramă ----------
@@ -1528,20 +1564,7 @@ function unitPath(unitId) {
   for (let u = byId.get(unitId); u && out.length < 50; u = byId.get(u.parent_id)) out.unshift(u.name);
   return out;
 }
-const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
 
-const ICONS = {
-  unit: '<path d="M3 7h7l2 2h9v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M15 14h4M17 12v4"/>',
-  user: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M19 8v6M16 11h6"/>',
-  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
-  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
-  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/>',
-};
-const Icon = {
-  props: { name: String },
-  computed: { svg() { return ICONS[this.name] || ''; } },
-  template: /*html*/ `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" v-html="svg"></svg>`,
-};
 
 // Rândul unei persoane, folosit în ambele vizualizări și în rezultatele căutării.
 const OrgPerson = {
@@ -1552,6 +1575,7 @@ const OrgPerson = {
     <li class="person" :class="{ hit }">
       <span class="avatar" :style="avatarStyle(p.full_name)">{{ initials(p.full_name) }}</span>
       <div class="person-txt"><b :title="p.full_name">{{ p.full_name }}</b><span class="muted small" :title="p.position">{{ p.position || '—' }}</span></div>
+      <a v-if="p.phone" class="person-mail" :href="'tel:' + p.phone.replace(/[^0-9+]/g, '')" :title="'Telefon: ' + p.phone" :aria-label="'Sună: ' + p.full_name"><Icon name="phone" /></a>
       <a v-if="p.email" class="person-mail" :href="'mailto:' + p.email" :title="'Scrie-i un e-mail: ' + p.email" :aria-label="'E-mail către ' + p.full_name"><Icon name="mail" /></a>
     </li>`,
 };
@@ -1933,7 +1957,7 @@ const OrgView = {
     </div>
 
     <div v-if="admin && unassigned.length" class="card ol-card unassigned">
-      <div class="ol-head"><h3>Fără subdiviziune</h3><span class="muted small">{{ plural(unassigned.length, 'persoană', 'persoane') }} · atribuiți-le din pagina „Utilizatori”</span></div>
+      <div class="ol-head"><h3>Fără subdiviziune</h3><span class="muted small">{{ plural(unassigned.length, 'persoană', 'persoane') }} · atribuiți-le din pagina „Angajați”</span></div>
       <ul class="people">
         <OrgPerson v-for="p in unassigned" :key="p.id" :p="p" />
       </ul>
@@ -2197,25 +2221,154 @@ const SettingsView = {
     </div>`,
 };
 
+// ---------- angajați ----------
+// Lista angajaților: vizibilă tuturor (nume, funcție, subdiviziune, telefon, e-mail).
+// Administratorii văd în plus conturile (utilizator, rol, stare), inclusiv pe cele dezactivate,
+// și pot modifica datele, inclusiv telefonul, direct din listă.
+const PeopleView = {
+  components: { UserForm, ImportPeople, Icon },
+  data: () => ({ accounts: [], editing: undefined, q: '', unit: '', loaded: false, importing: false }),
+  computed: {
+    store: () => store,
+    admin: () => isAdmin(),
+    units: () => flatUnits(),
+    people() {
+      return this.admin ? this.accounts : store.users;
+    },
+    shown() {
+      const q = fold(this.q);
+      const inUnit = this.unit === '' ? null : subtreeIds(Number(this.unit));
+      return this.people.filter((u) => {
+        if (inUnit && !inUnit.has(u.unit_id)) return false;
+        if (!q) return true;
+        return fold([u.full_name, u.username, u.position, u.email, u.phone, u.unit_id ? unitName(u.unit_id) : ''].join(' ')).includes(q);
+      });
+    },
+    summary() {
+      const n = this.people.length;
+      if (!this.admin) return plural(n, 'angajat', 'angajați');
+      return plural(n, 'cont', 'conturi') + ', dintre care ' + this.people.filter((u) => u.active).length + ' active';
+    },
+  },
+  methods: {
+    unitName,
+    initials,
+    avatarStyle,
+    role: (r) => ROLES[r],
+    tel: (p) => 'tel:' + String(p).replace(/[^0-9+]/g, ''),
+    async load() {
+      if (this.admin) await run(async () => (this.accounts = await api('/api/users')));
+      this.loaded = true;
+    },
+    async saved() {
+      this.editing = undefined;
+      await this.load();
+    },
+    async setPhone(u) {
+      const phone = await ask({ title: 'Telefon: ' + u.full_name, input: true, label: 'Numărul de telefon', value: u.phone || '', maxlength: 40, okLabel: 'Salvează' });
+      if (phone === null) return;
+      const ok = await run(async () => {
+        await api('/api/users/' + u.id, { method: 'PUT', body: { ...u, phone, active: !!u.active } });
+        await loadShared();
+      }, 'Telefonul a fost salvat.');
+      if (ok) this.load();
+    },
+    async remove(u) {
+      const ok = await ask({
+        title: 'Ștergeți contul?',
+        message: 'Contul „' + u.full_name + '” va fi șters definitiv. Documentele adăugate de această persoană rămân în sistem. Dacă persoana doar a plecat din instituție, puteți dezactiva contul în loc să îl ștergeți.',
+        okLabel: 'Șterge contul',
+        danger: true,
+      });
+      if (!ok) return;
+      const done = await run(async () => {
+        await api('/api/users/' + u.id, { method: 'DELETE' });
+        await loadShared();
+      }, 'Contul a fost șters.');
+      if (done) this.load();
+    },
+  },
+  mounted() {
+    this.load();
+  },
+  template: /*html*/ `
+    <div class="page-head">
+      <div>
+        <h1>Angajați</h1>
+        <p class="muted page-sub">{{ summary }}</p>
+      </div>
+      <div v-if="admin" class="head-actions">
+        <button class="btn" @click="importing = true">Importă din CSV…</button>
+        <button class="btn primary" @click="editing = null">+ Adaugă angajat</button>
+      </div>
+    </div>
+    <div class="toolbar">
+      <input v-model="q" type="search" placeholder="Caută după nume, funcție, telefon, e-mail…" aria-label="Caută angajați" />
+      <select v-model="unit" class="unit-filter" aria-label="Subdiviziunea">
+        <option value="">Toate subdiviziunile</option>
+        <option v-for="x in units" :key="x.id" :value="String(x.id)">{{ x.label }}</option>
+      </select>
+    </div>
+    <div class="card table-wrap">
+      <table class="people-table">
+        <thead>
+          <tr>
+            <th>Angajat</th><th>Subdiviziunea</th><th>Telefon</th><th>E-mail</th>
+            <template v-if="admin"><th>Cont</th><th>Rol</th><th>Stare</th><th></th></template>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="u in shown" :key="u.id" :class="{ off: admin && !u.active }">
+            <td>
+              <span class="who">
+                <span class="avatar sm" :style="avatarStyle(u.full_name)">{{ initials(u.full_name) }}</span>
+                <span class="who-txt"><b>{{ u.full_name }}</b><span class="muted small">{{ u.position || '—' }}</span></span>
+              </span>
+            </td>
+            <td class="small">{{ u.unit_id ? unitName(u.unit_id) : '—' }}</td>
+            <td class="nowrap">
+              <a v-if="u.phone" class="plain" :href="tel(u.phone)">{{ u.phone }}</a>
+              <button v-else-if="admin" class="btn link sm" @click="setPhone(u)">+ Adaugă</button>
+              <span v-else class="muted">—</span>
+            </td>
+            <td><a v-if="u.email" class="plain" :href="'mailto:' + u.email">{{ u.email }}</a><span v-else class="muted">—</span></td>
+            <template v-if="admin">
+              <td><code class="uname">{{ u.username }}</code></td>
+              <td><span class="badge" :class="{ gray: u.role === 'user', dark: u.role === 'admin' }">{{ role(u.role) }}</span></td>
+              <td><span class="status" :class="{ on: u.active }">{{ u.active ? (u.must_change ? 'Activ · parolă de schimbat' : 'Activ') : 'Dezactivat' }}</span></td>
+              <td class="row-actions">
+                <button class="icon-btn" title="Modifică" aria-label="Modifică" @click="editing = u"><Icon name="edit" /></button>
+                <button v-if="u.id !== store.me.id" class="icon-btn danger" title="Șterge contul" aria-label="Șterge contul" @click="remove(u)"><Icon name="trash" /></button>
+              </td>
+            </template>
+          </tr>
+          <tr v-if="loaded && !shown.length"><td :colspan="admin ? 8 : 4" class="empty-row">{{ people.length ? 'Niciun angajat nu corespunde căutării.' : 'Nu există angajați.' }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <UserForm v-if="editing !== undefined" :user="editing" @close="editing = undefined" @saved="saved" />
+    <ImportPeople v-if="importing" @close="importing = false" @done="(importing = false), load()" />`,
+};
+
 // ---------- aplicația ----------
 const App = {
-  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, UsersView, CategoriesView, SettingsView, AuditView },
+  components: { Login, ForcedPassword, Brand, Modal, DialogHost, PasswordFields, DocsView, InboxView, OrgView, PeopleView, CategoriesView, SettingsView, AuditView },
   data: () => ({ pass: null, passBusy: false, bump: false }),
   computed: {
     store: () => store,
     inbox: inboxCount,
     // [adresă, denumire, componentă]; notificările au propriul buton (cutia poștală) în dreapta barei
     routes() {
-      const items = [['documente', 'Documente', 'DocsView'], ['organigrama', 'Organigramă', 'OrgView'], ['notificari', 'Notificări', 'InboxView']];
-      if (isAdmin()) items.push(['utilizatori', 'Utilizatori', 'UsersView'], ['categorii', 'Categorii', 'CategoriesView'], ['setari', 'Setări', 'SettingsView'], ['jurnal', 'Jurnal', 'AuditView']);
+      const items = [['documente', 'Documente', 'DocsView'], ['angajati', 'Angajați', 'PeopleView'], ['organigrama', 'Organigramă', 'OrgView'], ['notificari', 'Notificări', 'InboxView']];
+      if (isAdmin()) items.push(['categorii', 'Categorii', 'CategoriesView'], ['setari', 'Setări', 'SettingsView'], ['jurnal', 'Jurnal', 'AuditView']);
       return items;
     },
     nav() {
       return this.routes.filter((n) => n[0] !== 'notificari');
     },
     view() {
-      // adresa veche „#backup” duce acum la Setări, unde se află și copia de rezervă
-      const route = store.route === 'backup' ? 'setari' : store.route;
+      // adresele vechi: „#backup” duce la Setări (unde se află și copia de rezervă), „#utilizatori” la Angajați
+      const route = { backup: 'setari', utilizatori: 'angajati' }[store.route] || store.route;
       const item = this.routes.find((n) => n[0] === route);
       return item ? item[2] : 'DocsView';
     },
@@ -2269,7 +2422,7 @@ const App = {
           <div class="topbar-in">
             <Brand />
             <nav class="nav">
-              <a v-for="n in nav" :key="n[0]" :href="'#' + n[0]" :class="{ on: view === n[2], sep: n[0] === 'utilizatori' }">{{ n[1] }}</a>
+              <a v-for="n in nav" :key="n[0]" :href="'#' + n[0]" :class="{ on: view === n[2], sep: n[0] === 'categorii' }">{{ n[1] }}</a>
             </nav>
             <div class="userbox">
               <a href="#notificari" class="mailbox" :class="{ on: view === 'InboxView', has: inbox, bump }" :title="inboxLabel" :aria-label="inboxLabel">

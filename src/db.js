@@ -119,6 +119,7 @@ addColumn('document_signers', 'position', 'INTEGER NOT NULL DEFAULT 0'); // ordi
 addColumn('document_files', 'signed_by', 'INTEGER'); // cine a încărcat această versiune semnată
 addColumn('document_files', 'signed_by_name', 'TEXT'); // numele rămâne chiar dacă utilizatorul este șters
 addColumn('document_files', 'created_at', 'TEXT');
+addColumn('users', 'phone', "TEXT NOT NULL DEFAULT ''"); // telefonul de serviciu, completat de administrator
 
 const INITIAL_PASSWORD_FILE = path.join(DATA_DIR, 'parola-initiala-admin.txt');
 
