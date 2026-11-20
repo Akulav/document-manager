@@ -44,6 +44,8 @@ O aplicație web pentru rețeaua internă. Fără telemetrie. Fără CDN. Fără
   aplicației) și încarcă versiunea semnată; apoi următorul, și tot așa.
 - Se păstrează doar originalele și ultima versiune semnată (care conține deja semnăturile anterioare).
 - Persoana aflată la rând primește un **e-mail**.
+- **Absențe**: administratorul înregistrează în pagina „Angajați” concediile și deplasările (tip, de la, până la).
+  Cât timp lipsește, persoana trece la finalul ordinii de semnare, iar colegii o văd marcată „Absent până la …”.
 - Aplicația nu validează criptografic semnătura; refuză doar un fișier identic cu unul deja existent.
 
 </td>

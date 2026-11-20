@@ -137,6 +137,17 @@ CREATE TABLE IF NOT EXISTS file_versions (
   created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_file_versions_file ON file_versions(file_id);
+-- absențele angajaților (concediu, deplasare…): cât timp lipsește, persoana trece la finalul lanțului de semnare
+CREATE TABLE IF NOT EXISTS absences (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  from_date TEXT NOT NULL,
+  to_date TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_absences_user ON absences(user_id, to_date);
 `);
 
 const INITIAL_PASSWORD_FILE = path.join(DATA_DIR, 'parola-initiala-admin.txt');

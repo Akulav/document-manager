@@ -8,6 +8,9 @@ const store = reactive({
   units: [],
   users: [],
   categories: [],
+  absences: [], // absențele în curs și cele programate ale angajaților
+  absenceKinds: [],
+  today: '', // data de azi după ceasul serverului
   docs: [],
   docsLoaded: false,
   toast: null,
@@ -24,6 +27,7 @@ function clearSession() {
   store.units = [];
   store.users = [];
   store.categories = [];
+  store.absences = [];
   store.docs = [];
   store.docsLoaded = false;
   store.dialog = null;
@@ -89,6 +93,9 @@ async function loadShared() {
   const [dir, cats] = await Promise.all([api('/api/directory'), api('/api/categories')]);
   store.units = dir.units;
   store.users = dir.users;
+  store.absences = dir.absences || [];
+  store.absenceKinds = dir.absenceKinds || [];
+  store.today = dir.today || '';
   store.categories = cats;
 }
 async function loadDocs() {
@@ -335,6 +342,7 @@ const ICONS = {
   eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>',
   review: '<path d="M4 5h16v11H10l-5 4v-4H4z"/><path d="M8 9h8M8 12h5"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
 };
 const Icon = {
   props: { name: String },
@@ -366,6 +374,16 @@ const OFFICE_EDIT = ['docx', 'odt', 'xlsx', 'ods', 'pptx', 'odp', 'pdf'];
 const OFFICE_VIEW = [...OFFICE_EDIT, 'doc', 'rtf', 'txt', 'xls', 'csv', 'ppt'];
 const extName = (n) => ((/\.([a-z0-9]{1,5})$/i.exec(n) || [])[1] || '').toLowerCase();
 const fmtDay = (s) => (s ? s.split('-').reverse().join('.') : '');
+// absența în curs azi (sau null) și următoarea absență programată a unei persoane
+const absenceNow = (userId) => {
+  const t = store.today || today();
+  return store.absences.find((a) => a.user_id === userId && a.from_date <= t && a.to_date >= t) || null;
+};
+const absenceNext = (userId) => {
+  const t = store.today || today();
+  return store.absences.find((a) => a.user_id === userId && a.from_date > t) || null;
+};
+const absenceText = (a) => a.kind + (a.from_date === a.to_date ? ', ' + fmtDay(a.from_date) : ', ' + fmtDay(a.from_date) + ' – ' + fmtDay(a.to_date));
 const addDays = (n) => {
   const d = new Date(Date.now() + n * 86400000);
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -448,6 +466,10 @@ const DocForm = {
     inactive(id) {
       const s = this.doc && this.doc.signers.find((x) => x.id === id);
       return !!s && !s.active && !s.signed_at;
+    },
+    away(id) {
+      const a = !this.hasSigned(id) && absenceNow(id);
+      return a ? a.kind.toLowerCase() + ' până la ' + fmtDay(a.to_date) : '';
     },
     dragLeave(e) {
       if (!e.currentTarget.contains(e.relatedTarget)) this.dragging = false;
@@ -577,7 +599,7 @@ const DocForm = {
               <ol v-if="form.signerIds.length" class="signorder">
                 <li v-for="(id, i) in form.signerIds" :key="id">
                   <span class="step">{{ i + 1 }}</span>
-                  <span class="fname">{{ personName(id) }} <span v-if="hasSigned(id)" class="muted small">(a semnat)</span><span v-else-if="inactive(id)" class="warn small">(cont dezactivat — eliminați sau înlocuiți)</span></span>
+                  <span class="fname">{{ personName(id) }} <span v-if="hasSigned(id)" class="muted small">(a semnat)</span><span v-else-if="inactive(id)" class="warn small">(cont dezactivat — eliminați sau înlocuiți)</span><span v-else-if="away(id)" class="warn small">(absent: {{ away(id) }}; semnează la final)</span></span>
                   <button type="button" class="icon-btn" :disabled="i === 0" @click="move(i, -1)" title="Mută mai sus" aria-label="Mută mai sus">↑</button>
                   <button type="button" class="icon-btn" :disabled="i === form.signerIds.length - 1" @click="move(i, 1)" title="Mută mai jos" aria-label="Mută mai jos">↓</button>
                   <button type="button" class="icon-btn danger" :disabled="hasSigned(id)" @click="form.signerIds.splice(i, 1)" title="Elimină" aria-label="Elimină semnatarul"><Icon name="trash" /></button>
@@ -588,11 +610,11 @@ const DocForm = {
                 <input v-model="signFilter" placeholder="Adaugă semnatar: caută după nume…" />
                 <div class="scroll short">
                   <button v-for="u in signCandidates" :key="u.id" type="button" class="side-item" @click="form.signerIds.push(u.id)">
-                    <span>+ {{ u.full_name }} <span v-if="!u.email" class="muted small">(fără e-mail)</span></span>
+                    <span>+ {{ u.full_name }} <span v-if="!u.email" class="muted small">(fără e-mail)</span><span v-if="away(u.id)" class="warn small">(absent: {{ away(u.id) }})</span></span>
                   </button>
                 </div>
               </div>
-              <p class="muted small hint">Fiecare semnatar descarcă versiunea curentă, o semnează digital și o încarcă înapoi; apoi vine rândul următorului. {{ mailHint }}</p>
+              <p class="muted small hint">Fiecare semnatar descarcă versiunea curentă, o semnează digital și o încarcă înapoi; apoi vine rândul următorului. Cine este absent (concediu, deplasare) semnează la final, după ceilalți. {{ mailHint }}</p>
             </template>
             <p v-else class="muted small hint">Activați dacă documentul trebuie semnat de una sau mai multe persoane, în ordine.</p>
           </section>
@@ -1005,6 +1027,11 @@ const DocCard = {
     pending() {
       return this.doc.signers.filter((s) => !s.signed_at).length;
     },
+    // ordinea în care se semnează efectiv: cine a semnat, cei prezenți, apoi cei absenți
+    chain() {
+      const sig = this.doc.signers;
+      return [...sig.filter((s) => s.signed_at), ...sig.filter((s) => !s.signed_at && !s.absent), ...sig.filter((s) => !s.signed_at && s.absent)];
+    },
     originals() {
       return this.doc.files.filter((f) => !f.signed_by_name);
     },
@@ -1051,7 +1078,9 @@ const DocCard = {
     signerTitle(s) {
       if (s.signed_at) return 'A semnat la ' + fmtDateTime(s.signed_at);
       if (!s.active) return 'Cont dezactivat: lanțul de semnare este blocat';
-      return s.id === this.doc.signTurn ? 'Este la rând' : 'Așteaptă';
+      const away = s.absent ? 'Absent până la ' + fmtDay(s.absent.to_date) : '';
+      if (s.id === this.doc.signTurn) return away ? away + ' · este la rând' : 'Este la rând';
+      return away || 'Așteaptă';
     },
     // serverul marchează documentul ca văzut când se deschide un fișier; reîmprospătăm lista puțin mai târziu
     opened() {
@@ -1218,9 +1247,9 @@ const DocCard = {
         <section v-if="doc.signers.length" class="dsec dsign" :class="{ done: !pending }">
           <h4><Icon name="pen" />Semnare <span class="pill" :class="pending ? 'amber' : 'green'">{{ doc.signers.length - pending }} din {{ doc.signers.length }}</span></h4>
           <ol class="stepper">
-            <li v-for="(s, i) in doc.signers" :key="s.id" :class="{ ok: s.signed_at, turn: s.id === doc.signTurn, blocked: !s.active && !s.signed_at }">
+            <li v-for="(s, i) in chain" :key="s.id" :class="{ ok: s.signed_at, turn: s.id === doc.signTurn, blocked: !s.active && !s.signed_at, away: s.absent && !s.signed_at }">
               <span class="st-dot">{{ s.signed_at ? '✓' : i + 1 }}</span>
-              <span class="st-txt"><b>{{ s.name }}</b><span class="small">{{ signerTitle(s) }}</span></span>
+              <span class="st-txt" :title="s.absent && !s.signed_at ? 'Persoană absentă: ' + s.absent.kind.toLowerCase() + ' până la ' + fmtDay(s.absent.to_date) + '. Semnează după ceilalți, când revine.' : null"><b>{{ s.name }}</b><span class="small">{{ signerTitle(s) }}</span></span>
             </li>
           </ol>
           <div v-if="doc.mySign === 'pending'" class="myturn">
@@ -2544,9 +2573,73 @@ const SettingsView = {
 // Lista angajaților: vizibilă tuturor (nume, funcție, subdiviziune, telefon, e-mail).
 // Administratorii văd în plus conturile (utilizator, rol, stare), inclusiv pe cele dezactivate,
 // și pot modifica datele, inclusiv telefonul, direct din listă.
+const AbsenceForm = {
+  components: { Modal, Icon },
+  props: { user: Object },
+  emits: ['close'],
+  data() {
+    return { busy: false, form: { kind: store.absenceKinds[0] || '', from_date: store.today || today(), to_date: store.today || today(), note: '' } };
+  },
+  computed: {
+    store: () => store,
+    list() {
+      return store.absences.filter((a) => a.user_id === this.user.id);
+    },
+  },
+  methods: {
+    fmtDay,
+    current: (a) => a.from_date <= (store.today || today()),
+    async submit() {
+      this.busy = true;
+      let r;
+      const ok = await run(async () => {
+        r = await api('/api/absences', { method: 'POST', body: { ...this.form, user_id: this.user.id } });
+        await loadShared();
+      });
+      this.busy = false;
+      if (!ok) return;
+      toast(r.movedDocs ? 'Absența a fost adăugată. ' + plural(r.movedDocs, 'document a trecut', 'documente au trecut') + ' la următorul semnatar.' : 'Absența a fost adăugată.');
+      this.form.note = '';
+      if (store.docsLoaded) loadDocs().catch(() => {});
+    },
+    async remove(a) {
+      const yes = await ask({ title: 'Anulați absența?', message: this.user.full_name + ': ' + absenceText(a) + '. Persoana își reia locul în ordinea de semnare.', okLabel: 'Anulează absența', danger: true });
+      if (!yes) return;
+      const ok = await run(async () => {
+        await api('/api/absences/' + a.id, { method: 'DELETE' });
+        await loadShared();
+      }, 'Absența a fost anulată.');
+      if (ok && store.docsLoaded) loadDocs().catch(() => {});
+    },
+  },
+  template: /*html*/ `
+    <Modal :title="'Absențe: ' + user.full_name" :busy="busy" ok-label="Adaugă absența" busy-label="Se adaugă…" cancel-label="Închide" @close="$emit('close')" @submit="submit">
+      <ul v-if="list.length" class="abs-list">
+        <li v-for="a in list" :key="a.id" :class="{ now: current(a) }">
+          <Icon name="calendar" />
+          <span class="abs-txt"><b>{{ a.kind }}</b><span class="small">{{ fmtDay(a.from_date) }} – {{ fmtDay(a.to_date) }}{{ current(a) ? ' · în curs' : ' · programată' }}</span><span v-if="a.note" class="muted small">{{ a.note }}</span></span>
+          <button type="button" class="icon-btn danger" title="Anulează absența" aria-label="Anulează absența" @click="remove(a)"><Icon name="trash" /></button>
+        </li>
+      </ul>
+      <p v-else class="muted small">Nu are absențe în curs sau programate.</p>
+      <h3 class="abs-head">Absență nouă</h3>
+      <label class="field"><span>Tipul absenței *</span>
+        <select v-model="form.kind" required>
+          <option v-for="k in store.absenceKinds" :key="k" :value="k">{{ k }}</option>
+        </select>
+      </label>
+      <div class="row">
+        <label class="field"><span>De la *</span><input v-model="form.from_date" type="date" required /></label>
+        <label class="field"><span>Până la (inclusiv) *</span><input v-model="form.to_date" type="date" :min="form.from_date" required /></label>
+      </div>
+      <label class="field"><span>Observație (o vede doar administratorul)</span><input v-model="form.note" maxlength="300" placeholder="de ex. înlocuit de …" /></label>
+      <p class="muted small hint">Cât timp este absentă, persoana trece la finalul ordinii de semnare, iar ceilalți semnatari nu o mai așteaptă. Colegii văd în listă că este absentă.</p>
+    </Modal>`,
+};
+
 const PeopleView = {
-  components: { UserForm, ImportPeople, Icon },
-  data: () => ({ accounts: [], editing: undefined, q: '', unit: '', loaded: false, importing: false }),
+  components: { UserForm, ImportPeople, AbsenceForm, Icon },
+  data: () => ({ accounts: [], editing: undefined, q: '', unit: '', loaded: false, importing: false, absenceOf: null, onlyAway: false }),
   computed: {
     store: () => store,
     admin: () => isAdmin(),
@@ -2559,14 +2652,19 @@ const PeopleView = {
       const inUnit = this.unit === '' ? null : subtreeIds(Number(this.unit));
       return this.people.filter((u) => {
         if (inUnit && !inUnit.has(u.unit_id)) return false;
+        if (this.onlyAway && !absenceNow(u.id)) return false;
         if (!q) return true;
         return fold([u.full_name, u.username, u.position, u.email, u.phone, u.unit_id ? unitName(u.unit_id) : ''].join(' ')).includes(q);
       });
     },
     summary() {
       const n = this.people.length;
-      if (!this.admin) return plural(n, 'angajat', 'angajați');
-      return plural(n, 'cont', 'conturi') + ', dintre care ' + this.people.filter((u) => u.active).length + ' active';
+      const away = this.awayCount ? ' · ' + plural(this.awayCount, 'absent azi', 'absenți azi') : '';
+      if (!this.admin) return plural(n, 'angajat', 'angajați') + away;
+      return plural(n, 'cont', 'conturi') + ', dintre care ' + this.people.filter((u) => u.active).length + ' active' + away;
+    },
+    awayCount() {
+      return this.people.filter((u) => absenceNow(u.id)).length;
     },
   },
   methods: {
@@ -2574,6 +2672,9 @@ const PeopleView = {
     initials,
     avatarStyle,
     role: (r) => ROLES[r],
+    absenceNow,
+    absenceNext,
+    fmtDay,
     tel: (p) => 'tel:' + String(p).replace(/[^0-9+]/g, ''),
     async load() {
       if (this.admin) await run(async () => (this.accounts = await api('/api/users')));
@@ -2627,6 +2728,7 @@ const PeopleView = {
         <option value="">Toate subdiviziunile</option>
         <option v-for="x in units" :key="x.id" :value="String(x.id)">{{ x.label }}</option>
       </select>
+      <label v-if="awayCount || onlyAway" class="check away-filter"><input type="checkbox" v-model="onlyAway" /> Doar absenții azi</label>
     </div>
     <div class="card table-wrap">
       <table class="people-table">
@@ -2641,7 +2743,10 @@ const PeopleView = {
             <td>
               <span class="who">
                 <span class="avatar sm" :style="avatarStyle(u.full_name)">{{ initials(u.full_name) }}</span>
-                <span class="who-txt"><b>{{ u.full_name }}</b><span class="muted small">{{ u.position || '—' }}</span></span>
+                <span class="who-txt"><b>{{ u.full_name }}</b><span class="muted small">{{ u.position || '—' }}</span>
+                  <span v-if="absenceNow(u.id)" class="away-badge" :title="absenceNow(u.id).kind + ', ' + fmtDay(absenceNow(u.id).from_date) + ' – ' + fmtDay(absenceNow(u.id).to_date)"><Icon name="calendar" />Absent până la {{ fmtDay(absenceNow(u.id).to_date) }}</span>
+                  <span v-else-if="absenceNext(u.id)" class="away-badge next"><Icon name="calendar" />{{ absenceNext(u.id).kind }} din {{ fmtDay(absenceNext(u.id).from_date) }}</span>
+                </span>
               </span>
             </td>
             <td class="small">{{ u.unit_id ? unitName(u.unit_id) : '—' }}</td>
@@ -2655,6 +2760,7 @@ const PeopleView = {
               <td><code class="uname">{{ u.username }}</code></td>
               <td><span class="badge" :class="{ gray: u.role === 'user', dark: u.role === 'admin' }">{{ role(u.role) }}</span></td>
               <td class="row-actions">
+                <button class="icon-btn" title="Absențe (concediu, deplasare)" aria-label="Absențe" @click="absenceOf = u"><Icon name="calendar" /></button>
                 <button class="icon-btn" title="Modifică" aria-label="Modifică" @click="editing = u"><Icon name="edit" /></button>
                 <button v-if="u.id !== store.me.id" class="icon-btn danger" title="Șterge contul" aria-label="Șterge contul" @click="remove(u)"><Icon name="trash" /></button>
               </td>
@@ -2665,7 +2771,8 @@ const PeopleView = {
       </table>
     </div>
     <UserForm v-if="editing !== undefined" :user="editing" @close="editing = undefined" @saved="saved" />
-    <ImportPeople v-if="importing" @close="importing = false" @done="(importing = false), load()" />`,
+    <ImportPeople v-if="importing" @close="importing = false" @done="(importing = false), load()" />
+    <AbsenceForm v-if="absenceOf" :user="absenceOf" @close="absenceOf = null" />`,
 };
 
 // ---------- aplicația ----------

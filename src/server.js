@@ -337,10 +337,26 @@ async function discardUploads(req) {
 }
 
 // Semnarea este în lanț: următorul la rând este primul semnatar (după poziție) care încă nu a semnat.
+// Cine este absent azi (concediu, deplasare…) trece la finalul lanțului până se întoarce; dacă au rămas
+// doar persoane absente, rândul este tot al lor.
+const ABSENT_NOW = 'EXISTS (SELECT 1 FROM absences a WHERE a.user_id = s.user_id AND a.from_date <= ? AND a.to_date >= ?)';
 function currentSigner(docId) {
-  const r = db.prepare('SELECT user_id FROM document_signers WHERE document_id = ? AND signed_at IS NULL ORDER BY position, user_id LIMIT 1').get(docId);
+  const today = localToday();
+  const r = db
+    .prepare(`SELECT s.user_id FROM document_signers s WHERE s.document_id = ? AND s.signed_at IS NULL ORDER BY ${ABSENT_NOW}, s.position, s.user_id LIMIT 1`)
+    .get(docId, today, today);
   return r ? r.user_id : null;
 }
+// absențele în curs azi, după utilizator
+function absentToday() {
+  const today = localToday();
+  const map = new Map();
+  for (const a of db.prepare('SELECT user_id, kind, to_date FROM absences WHERE from_date <= ? AND to_date >= ? ORDER BY to_date').all(today, today)) {
+    map.set(a.user_id, { kind: a.kind, to_date: a.to_date });
+  }
+  return map;
+}
+const ABSENCE_KINDS = ['Concediu de odihnă', 'Concediu medical', 'Concediu de studii', 'Concediu fără plată', 'Deplasare', 'Altele'];
 
 // Documentele la care persoana este acum la rând să semneze.
 function signTurnsOf(userId) {
@@ -408,11 +424,12 @@ function listDocuments(user) {
     )
     .all(user.id, ...acc.params);
   if (!rows.length) return [];
+  const away = absentToday();
   const signers = byDocument(
     db.prepare(
       'SELECT s.document_id, s.user_id AS id, u.full_name AS name, u.active, s.signed_at FROM document_signers s JOIN users u ON u.id = s.user_id ORDER BY s.position, s.user_id'
     ).all(),
-    (r) => ({ ...r, active: !!r.active })
+    (r) => ({ ...r, active: !!r.active, absent: away.get(r.id) || null })
   );
   const tags = byDocument(db.prepare('SELECT document_id, tag_id FROM document_tags').all(), (r) => r.tag_id);
   const units = byDocument(db.prepare('SELECT document_id, unit_id FROM document_units').all(), (r) => r.unit_id);
@@ -421,7 +438,7 @@ function listDocuments(user) {
   return rows.map(({ seen, ...d }) => {
     const sig = signers.get(d.id) || [];
     const mine = sig.find((s) => s.id === user.id);
-    const turn = sig.find((s) => !s.signed_at);
+    const turn = sig.find((s) => !s.signed_at && !s.absent) || sig.find((s) => !s.signed_at);
     return {
       ...d,
       signers: sig,
@@ -561,10 +578,59 @@ app.register(async (app) => {
   });
 
   // --- organigramă și lista angajaților (vizibile tuturor angajaților) ---
-  app.get('/api/directory', { preHandler: requireUser }, async () => ({
+  app.get('/api/directory', { preHandler: requireUser }, async (req) => ({
     units: db.prepare('SELECT id, name, type, parent_id, sort FROM units ORDER BY sort, name').all(),
     users: db.prepare('SELECT id, full_name, position, email, phone, unit_id FROM users WHERE active = 1 ORDER BY full_name').all(),
+    // absențele în curs și cele programate; observația o vede doar administratorul
+    absences: db
+      .prepare('SELECT id, user_id, kind, from_date, to_date, note FROM absences WHERE to_date >= ? ORDER BY from_date, id')
+      .all(localToday())
+      .map((a) => (req.user.role === 'admin' ? a : { ...a, note: '' })),
+    absenceKinds: ABSENCE_KINDS,
+    today: localToday(),
   }));
+
+  // --- absențe (admin) ---
+  // Când o absență începe azi sau se anulează, rândul la semnare se poate muta: anunțăm noul semnatar.
+  function signTurnsAround(userId, change) {
+    const docs = db.prepare('SELECT document_id FROM document_signers WHERE user_id = ? AND signed_at IS NULL').all(userId).map((r) => r.document_id);
+    const before = new Map(docs.map((d) => [d, currentSigner(d)]));
+    change();
+    return docs.filter((d) => currentSigner(d) !== before.get(d));
+  }
+  function absenceLabel(a) {
+    const user = db.prepare('SELECT full_name FROM users WHERE id = ?').get(a.user_id);
+    return `${user ? user.full_name : '#' + a.user_id}: ${a.kind}, ${a.from_date} – ${a.to_date}`;
+  }
+  app.post('/api/absences', { preHandler: requireAdmin }, async (req) => {
+    const b = req.body || {};
+    const userId = Number(b.user_id);
+    if (!Number.isInteger(userId) || !db.prepare('SELECT 1 FROM users WHERE id = ?').get(userId)) throw fail(400, 'Angajatul nu a fost găsit.');
+    const kind = ABSENCE_KINDS.includes(b.kind) ? b.kind : null;
+    if (!kind) throw fail(400, 'Alegeți tipul absenței.');
+    const from = String(b.from_date || '');
+    const to = String(b.to_date || '');
+    if (!validDate(from) || !validDate(to)) throw fail(400, 'Indicați datele de început și de sfârșit ale absenței.');
+    if (to < from) throw fail(400, 'Data de sfârșit nu poate fi înaintea datei de început.');
+    if (to < localToday()) throw fail(400, 'Absența s-a încheiat deja; indicați o perioadă actuală sau viitoare.');
+    const note = String(b.note || '').trim().slice(0, 300);
+    let id;
+    const moved = signTurnsAround(userId, () => {
+      id = lastId(db.prepare('INSERT INTO absences (user_id, kind, from_date, to_date, note) VALUES (?, ?, ?, ?, ?)').run(userId, kind, from, to, note));
+    });
+    audit(req, 'absență adăugată', absenceLabel({ user_id: userId, kind, from_date: from, to_date: to }));
+    for (const docId of moved) notifySigners(req, docId, [currentSigner(docId)]).catch((e) => req.log.error(e));
+    return { id, movedDocs: moved.length };
+  });
+  app.delete('/api/absences/:id', { preHandler: requireAdmin }, async (req) => {
+    const id = paramId(req);
+    const old = db.prepare('SELECT user_id, kind, from_date, to_date FROM absences WHERE id = ?').get(id);
+    if (!old) throw fail(404, 'Absența nu a fost găsită.');
+    const moved = signTurnsAround(old.user_id, () => db.prepare('DELETE FROM absences WHERE id = ?').run(id));
+    audit(req, 'absență anulată', absenceLabel(old));
+    for (const docId of moved) notifySigners(req, docId, [currentSigner(docId)]).catch((e) => req.log.error(e));
+    return { ok: true, movedDocs: moved.length };
+  });
 
   app.post('/api/units', { preHandler: requireAdmin }, async (req) => {
     const u = readUnit(req.body || {}, null);

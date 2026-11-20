@@ -676,3 +676,16 @@ body.noscroll { overflow: hidden; }
   .oo-title { max-width: none; flex: 1 1 100%; }
   .oo-note { flex-basis: 100%; order: 5; }
 }
+
+/* absențe */
+.away-badge { display: inline-flex; align-items: center; gap: 4px; margin-top: 3px; font-size: 12px; font-weight: 600; color: #9a5b00; background: #fff4e0; border-radius: 999px; padding: 1px 9px 1px 6px; width: fit-content; white-space: nowrap; }
+.away-badge.next { color: var(--muted); background: #eef0f3; font-weight: 500; }
+.away-badge svg { width: 13px; height: 13px; }
+.away-filter { white-space: nowrap; }
+.abs-list { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 6px; }
+.abs-list li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.abs-list li.now { border-color: #f1c98a; background: #fffaf1; }
+.abs-list li > svg { width: 18px; height: 18px; flex: none; color: var(--muted); }
+.abs-txt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.abs-head { font-size: 14px; margin: 14px 0 2px; }
+.stepper li.away .st-dot { background: #fff4e0; color: #9a5b00; }
