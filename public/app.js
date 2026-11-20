@@ -330,6 +330,8 @@ const ICONS = {
   upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
   tag: '<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="8" cy="8" r="1.5"/>',
+  left: '<path d="m15 6-6 6 6 6"/>',
+  right: '<path d="m9 6 6 6-6 6"/>',
   eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>',
   review: '<path d="M4 5h16v11H10l-5 4v-4H4z"/><path d="M8 9h8M8 12h5"/>',
@@ -341,8 +343,9 @@ const Icon = {
 };
 
 // ---------- documente ----------
-const docDay = (d) => Number(d.doc_date.slice(8));
-const docMon = (d) => MONTHS[Number(d.doc_date.slice(5, 7)) - 1].slice(0, 3) + ' ' + d.doc_date.slice(0, 4);
+// documentele fără dată (formulare, modele) au doc_date = ''
+const docDay = (d) => (d.doc_date ? Number(d.doc_date.slice(8)) : '—');
+const docMon = (d) => (d.doc_date ? MONTHS[Number(d.doc_date.slice(5, 7)) - 1].slice(0, 3) + ' ' + d.doc_date.slice(0, 4) : 'fără dată');
 function visLabel(d) {
   if (d.visibility === 'all') return 'Toți angajații';
   const names = [...d.unitIds.map(unitName), ...d.userIds.map((id) => (store.users.find((u) => u.id === id) || {}).full_name || '—')];
@@ -382,10 +385,11 @@ const DocForm = {
       newFiles: [],
       needsSign: d ? d.signers.length > 0 : false,
       needsReview: d ? !!d.review_until : false,
+      noDate: d ? !d.doc_date : false,
       form: {
         title: d ? d.title : '',
         number: d ? d.number : '',
-        doc_date: d ? d.doc_date : today(),
+        doc_date: d && d.doc_date ? d.doc_date : today(),
         description: d ? d.description : '',
         visibility: d ? d.visibility : 'all',
         tagIds: d ? [...d.tagIds] : [],
@@ -471,7 +475,7 @@ const DocForm = {
     async submit() {
       const fd = new FormData();
       if (this.needsReview && !this.form.review_until) return toast('Alegeți termenul de avizare.', true);
-      fd.append('data', JSON.stringify({ ...this.form, signerIds: this.needsSign ? this.form.signerIds : [], review_until: this.needsReview ? this.form.review_until : '' }));
+      fd.append('data', JSON.stringify({ ...this.form, signerIds: this.needsSign ? this.form.signerIds : [], review_until: this.needsReview ? this.form.review_until : '', doc_date: this.noDate ? '' : this.form.doc_date }));
       for (const f of this.newFiles) fd.append('files', f);
       this.busy = true;
       try {
@@ -493,7 +497,10 @@ const DocForm = {
           <div class="fsec-head"><span class="fnum">1</span><div><h3>Date generale</h3><p>Denumirea, data și numărul de înregistrare</p></div></div>
           <div class="fgrid4">
             <label class="field span2"><span>Denumirea documentului *</span><input v-model="form.title" maxlength="300" required autofocus /></label>
-            <label class="field"><span>Data documentului *</span><input v-model="form.doc_date" type="date" required /></label>
+            <div class="field datefield">
+              <span><label for="doc-date">Data documentului{{ noDate ? '' : ' *' }}</label><label class="nodate"><input type="checkbox" v-model="noDate" /> fără dată</label></span>
+              <input id="doc-date" v-model="form.doc_date" type="date" :required="!noDate" :disabled="noDate" :title="noDate ? 'Pentru formulare, modele și alte documente fără dată' : ''" />
+            </div>
             <label class="field"><span>Număr</span><input v-model="form.number" maxlength="60" placeholder="ex. 15-P" /></label>
             <label class="field span4 mb0"><span>Descriere <span class="opt">(opțional)</span></span><textarea v-model="form.description" rows="2" maxlength="5000" placeholder="Pe scurt, despre ce este documentul"></textarea></label>
           </div>
@@ -977,6 +984,7 @@ const DocCard = {
     },
     fullDate() {
       const d = this.doc.doc_date;
+      if (!d) return 'Fără dată';
       return Number(d.slice(8)) + ' ' + MONTHS[Number(d.slice(5, 7)) - 1] + ' ' + d.slice(0, 4);
     },
     // o singură stare pe rând, în ordinea importanței
@@ -1254,16 +1262,33 @@ const DocCard = {
     </article>`,
 };
 
+// Categoriile deschise în bara laterală se țin minte în browser, separat pentru fiecare cont
+// (implicit toate sunt restrânse). Fără acces la localStorage, pur și simplu nu se păstrează.
+const openCatsKey = () => 'ansc.openCats.' + store.me.id;
+function readOpenCats() {
+  try {
+    const v = JSON.parse(localStorage.getItem(openCatsKey()) || '[]');
+    return Array.isArray(v) ? v.filter(Number.isInteger) : [];
+  } catch {
+    return [];
+  }
+}
+function writeOpenCats(ids) {
+  try {
+    localStorage.setItem(openCatsKey(), JSON.stringify(ids));
+  } catch {}
+}
+
 const DocsView = {
-  components: { DocForm, DocCard },
-  data: () => ({ sel: { type: 'all', id: null }, year: '', q: '', editing: undefined }),
+  components: { DocForm, DocCard, Icon },
+  data: () => ({ sel: { type: 'all', id: null }, year: '', q: '', editing: undefined, openCats: readOpenCats() }),
   computed: {
     store: () => store,
     docs: () => store.docs,
     canAdd: () => store.me.role !== 'user',
     tags: () => tagIndex(),
     years() {
-      return [...new Set(this.docs.map((d) => d.doc_date.slice(0, 4)))];
+      return [...new Set(this.docs.filter((d) => d.doc_date).map((d) => d.doc_date.slice(0, 4)))];
     },
     counts() {
       const tag = {};
@@ -1290,13 +1315,14 @@ const DocsView = {
         return hay.join(' ').toLowerCase().includes(q);
       });
     },
-    // Lista vine deja ordonată după data documentului (cele mai recente primele); aici doar o grupăm pe luni.
+    // Lista vine deja ordonată după data documentului (cele mai recente primele, cele fără dată la sfârșit);
+    // aici doar o grupăm pe luni.
     groups() {
       const out = [];
       for (const d of this.filtered) {
         const key = d.doc_date.slice(0, 7);
         if (!out.length || out[out.length - 1].key !== key) {
-          out.push({ key, label: MONTHS[Number(key.slice(5)) - 1] + ' ' + key.slice(0, 4), docs: [] });
+          out.push({ key, label: key ? MONTHS[Number(key.slice(5)) - 1] + ' ' + key.slice(0, 4) : 'Fără dată (formulare, modele)', docs: [] });
         }
         out[out.length - 1].docs.push(d);
       }
@@ -1307,6 +1333,12 @@ const DocsView = {
     plural,
     isSel(type, id) {
       return this.sel.type === type && this.sel.id === id;
+    },
+    toggleCat(id) {
+      const i = this.openCats.indexOf(id);
+      if (i < 0) this.openCats.push(id);
+      else this.openCats.splice(i, 1);
+      writeOpenCats(this.openCats);
     },
   },
   template: /*html*/ `
@@ -1323,12 +1355,17 @@ const DocsView = {
           <span>Toate documentele</span><span class="count">{{ docs.length }}</span>
         </button>
         <template v-for="c in store.categories" :key="c.id">
-          <button class="side-item side-cat" :class="{ on: isSel('cat', c.id) }" @click="sel = { type: 'cat', id: c.id }">
-            <span :title="c.name"><i class="dot" :style="{ background: c.color }"></i>{{ c.name }}</span><span class="count">{{ counts.cat[c.id] || 0 }}</span>
-          </button>
-          <button v-for="t in c.tags" :key="t.id" class="side-item side-tag" :class="{ on: isSel('tag', t.id) }" @click="sel = { type: 'tag', id: t.id }">
-            <span :title="t.name">{{ t.name }}</span><span class="count">{{ counts.tag[t.id] || 0 }}</span>
-          </button>
+          <div class="side-catrow" :class="{ open: openCats.includes(c.id) }">
+            <button class="side-caret" :disabled="!c.tags.length" :aria-expanded="openCats.includes(c.id) ? 'true' : 'false'" :aria-label="(openCats.includes(c.id) ? 'Restrânge ' : 'Extinde ') + c.name" :title="c.tags.length ? (openCats.includes(c.id) ? 'Restrânge' : 'Arată etichetele') : 'Fără etichete'" @click="toggleCat(c.id)"><Icon name="chevron" /></button>
+            <button class="side-item side-cat" :class="{ on: isSel('cat', c.id) }" @click="sel = { type: 'cat', id: c.id }">
+              <span :title="c.name"><i class="dot" :style="{ background: c.color }"></i>{{ c.name }}</span><span class="count">{{ counts.cat[c.id] || 0 }}</span>
+            </button>
+          </div>
+          <template v-if="openCats.includes(c.id)">
+            <button v-for="t in c.tags" :key="t.id" class="side-item side-tag" :class="{ on: isSel('tag', t.id) }" @click="sel = { type: 'tag', id: t.id }">
+              <span :title="t.name">{{ t.name }}</span><span class="count">{{ counts.tag[t.id] || 0 }}</span>
+            </button>
+          </template>
         </template>
       </aside>
 
@@ -2249,6 +2286,16 @@ const CategoriesView = {
         store.categories = await api('/api/categories');
       }, msg);
     },
+    // ordinea de aici este ordinea din bara laterală a documentelor și din formulare
+    move(i, step) {
+      const ids = store.categories.map((c) => c.id);
+      ids.splice(i + step, 0, ids.splice(i, 1)[0]);
+      const before = store.categories;
+      store.categories = ids.map((id) => before.find((c) => c.id === id)); // imediat, fără să aștepte serverul
+      run(() => api('/api/categories/order', { method: 'POST', body: { ids } })).then((ok) => {
+        if (!ok) store.categories = before;
+      });
+    },
     async saveCat() {
       const f = this.catForm;
       this.busy = true;
@@ -2288,14 +2335,17 @@ const CategoriesView = {
     <div class="page-head">
       <div>
         <h1>Categorii și etichete</h1>
-        <p class="muted page-sub">Categoriile grupează etichetele (ex. „Resurse umane” → „Concedii”). La adăugarea unui document se aleg una sau mai multe etichete.</p>
+        <p class="muted page-sub">Categoriile grupează etichetele (ex. „Resurse umane” → „Concedii”). La adăugarea unui document se aleg una sau mai multe etichete. Săgețile schimbă ordinea categoriilor în toată aplicația.</p>
       </div>
       <button class="btn primary" @click="catForm = { id: null, name: '', color: '#1d4e89', sort: 0 }">+ Adaugă categorie</button>
     </div>
     <div class="cats">
-      <div v-for="c in store.categories" :key="c.id" class="card cat" :style="{ borderTopColor: c.color }">
+      <div v-for="(c, i) in store.categories" :key="c.id" class="card cat" :style="{ borderTopColor: c.color }">
         <div class="cat-head">
+          <span class="cat-pos" :title="'Poziția ' + (i + 1) + ' în listă'">{{ i + 1 }}</span>
           <h2 :title="c.name">{{ c.name }}</h2>
+          <button class="icon-btn" :disabled="i === 0" title="Mută mai în față" aria-label="Mută categoria mai în față" @click="move(i, -1)"><Icon name="left" /></button>
+          <button class="icon-btn" :disabled="i === store.categories.length - 1" title="Mută mai în spate" aria-label="Mută categoria mai în spate" @click="move(i, 1)"><Icon name="right" /></button>
           <button class="icon-btn" title="Modifică categoria" @click="catForm = { id: c.id, name: c.name, color: c.color, sort: c.sort }"><Icon name="edit" /></button>
           <button class="icon-btn danger" title="Șterge categoria" @click="removeCat(c)"><Icon name="trash" /></button>
         </div>
@@ -2315,10 +2365,7 @@ const CategoriesView = {
 
     <Modal v-if="catForm" :title="catForm.id ? 'Modifică categoria' : 'Categorie nouă'" :busy="busy" @close="catForm = null" @submit="saveCat">
       <label class="field"><span>Denumirea *</span><input v-model="catForm.name" maxlength="80" required autofocus placeholder="ex. Resurse umane" /></label>
-      <div class="row">
-        <label class="field"><span>Culoarea</span><input v-model="catForm.color" type="color" /></label>
-        <label class="field"><span>Ordinea de afișare</span><input v-model.number="catForm.sort" type="number" /></label>
-      </div>
+      <label class="field"><span>Culoarea</span><input v-model="catForm.color" type="color" /></label>
     </Modal>`,
 };
 

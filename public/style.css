@@ -86,8 +86,24 @@ label.field > span { display: block; font-size: 13px; font-weight: 600; margin-b
 .side-item .count { color: var(--muted); font-size: 12px; font-weight: 400; flex: 0 0 auto; }
 .side-item { align-items: baseline; }
 .side-item > span:first-child { min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
-.side-cat { font-weight: 600; margin-top: 6px; }
-.side-tag { padding-left: 28px; font-size: 14px; }
+.side-cat { font-weight: 600; }
+.side-tag { padding-left: 38px; font-size: 14px; }
+/* categoriile se restrâng: săgeata deschide etichetele, numele filtrează documentele */
+.side-catrow { display: flex; align-items: flex-start; gap: 0; margin-top: 4px; }
+.side-catrow .side-item { flex: 1; min-width: 0; padding-left: 4px; }
+.side-caret { flex: 0 0 26px; height: 30px; display: grid; place-items: center; border: 0; background: none; border-radius: 7px; color: var(--muted); cursor: pointer; padding: 0; }
+.side-caret:hover:not(:disabled) { background: #f2f5f9; color: var(--accent); }
+.side-caret:disabled { opacity: .35; cursor: default; }
+.side-caret .icon { width: 15px; height: 15px; transform: rotate(-90deg); transition: transform .15s; }
+.side-catrow.open .side-caret .icon { transform: none; }
+/* data documentului cu opțiunea „fără dată” */
+.datefield { margin-bottom: 12px; }
+.datefield > span { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.datefield .nodate { display: inline-flex; align-items: center; gap: 4px; font-weight: 400; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.datefield .nodate input { margin: 0; }
+.datefield input[type=date] { width: 100%; }
+.datefield input:disabled { color: transparent; background: #f2f4f7; }
+.cat-pos { flex: 0 0 auto; min-width: 22px; height: 22px; margin-right: 6px; border-radius: 6px; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: #f2f4f7; color: var(--muted); }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; }
 .toolbar { display: flex; gap: 10px; margin-bottom: 16px; }
 .toolbar select { width: 150px; }
