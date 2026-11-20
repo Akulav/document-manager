@@ -1355,14 +1355,25 @@ const DocsView = {
 };
 
 // ---------- notificări ----------
+// Aceeași așezare ca pagina Documente: filtre în stânga, lista cu aceleași coloane în dreapta.
 const InboxView = {
   components: { DocForm, DocCard },
-  data: () => ({ editing: undefined }),
+  data: () => ({ editing: undefined, show: 'all' }),
   computed: {
     toSign: () => store.docs.filter((d) => d.mySign === 'pending'),
     fresh: () => store.docs.filter((d) => d.unseen && d.mySign !== 'pending'),
+    total() {
+      return this.toSign.length + this.fresh.length;
+    },
+    groups() {
+      const out = [];
+      if (this.show !== 'new' && this.toSign.length) out.push({ key: 'sign', label: 'Așteaptă semnătura dvs.', docs: this.toSign });
+      if (this.show !== 'sign' && this.fresh.length) out.push({ key: 'new', label: 'Documente noi, încă nevăzute', docs: this.fresh });
+      return out;
+    },
   },
   methods: {
+    plural,
     seenAll() {
       run(async () => {
         await api('/api/documents/seen-all', { method: 'POST' });
@@ -1372,18 +1383,27 @@ const InboxView = {
   },
   template: /*html*/ `
     <div class="page-head">
-      <h1>Notificări</h1>
+      <div>
+        <h1>Notificări</h1>
+        <p class="muted page-sub">{{ total ? plural(total, 'notificare', 'notificări') : 'Nicio notificare nouă' }}</p>
+      </div>
       <button v-if="fresh.length" class="btn" @click="seenAll">Marchează toate ca văzute</button>
     </div>
-    <div v-if="!toSign.length && !fresh.length" class="card empty">Nu aveți notificări. Sunteți la zi cu toate documentele.</div>
-    <template v-if="toSign.length">
-      <div class="month">Așteaptă semnătura dvs. ({{ toSign.length }})</div>
-      <DocCard v-for="d in toSign" :key="d.id" :doc="d" start-open @edit="editing = $event" />
-    </template>
-    <template v-if="fresh.length">
-      <div class="month">Documente noi, încă nevăzute ({{ fresh.length }})</div>
-      <DocCard v-for="d in fresh" :key="d.id" :doc="d" @edit="editing = $event" />
-    </template>
+    <div class="docs">
+      <aside class="card side">
+        <button class="side-item" :class="{ on: show === 'all' }" @click="show = 'all'"><span>Toate notificările</span><span class="count">{{ total }}</span></button>
+        <button class="side-item" :class="{ on: show === 'sign' }" @click="show = 'sign'"><span>De semnat de dvs.</span><span class="count">{{ toSign.length }}</span></button>
+        <button class="side-item" :class="{ on: show === 'new' }" @click="show = 'new'"><span>Documente nevăzute</span><span class="count">{{ fresh.length }}</span></button>
+      </aside>
+      <section>
+        <div v-if="!groups.length" class="card empty">{{ total ? 'Nicio notificare în această categorie.' : 'Nu aveți notificări. Sunteți la zi cu toate documentele.' }}</div>
+        <div v-else class="dhead" aria-hidden="true"><span>Data</span><span>Document</span><span>Stare</span><span>Fișiere</span><span></span></div>
+        <template v-for="g in groups" :key="g.key">
+          <div class="month">{{ g.label }} ({{ g.docs.length }})</div>
+          <DocCard v-for="d in g.docs" :key="d.id" :doc="d" @edit="editing = $event" />
+        </template>
+      </section>
+    </div>
     <DocForm v-if="editing !== undefined" :doc="editing" @close="editing = undefined" @saved="editing = undefined" />`,
 };
 
