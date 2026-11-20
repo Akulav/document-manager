@@ -41,7 +41,7 @@ async function sendSignRequests(doc, users, origin) {
   if (out.disabled) return out;
   const transport = open(s);
   const url = (s.app_url || origin).replace(/\/+$/, '');
-  const date = doc.doc_date.split('-').reverse().join('.');
+  const date = doc.doc_date ? doc.doc_date.split('-').reverse().join('.') : 'fără dată';
   await Promise.all(
     users.map(async (u) => {
       if (!u.email) return out.noEmail.push(u.full_name);

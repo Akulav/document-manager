@@ -254,8 +254,9 @@ function readDoc(data, docId = null) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw fail(400, 'Date lipsă.');
   const title = str(data.title, 300);
   if (!title) throw fail(400, 'Introduceți denumirea documentului.');
+  // data poate lipsi (formulare, modele, documente de referință): se păstrează ca șir gol
   const doc_date = str(data.doc_date, 10);
-  if (!validDate(doc_date)) throw fail(400, 'Indicați o dată validă a documentului.');
+  if (doc_date && !validDate(doc_date)) throw fail(400, 'Indicați o dată validă a documentului sau bifați „fără dată”.');
   const visibility = data.visibility === 'restricted' ? 'restricted' : 'all';
   const exists = (table, ids) => {
     const q = db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`);
@@ -776,6 +777,18 @@ app.register(async (app) => {
     const c = readCategory(req.body || {});
     const r = db.prepare('UPDATE categories SET name = ?, color = ?, sort = ? WHERE id = ?').run(c.name, c.color, c.sort, paramId(req));
     if (!r.changes) throw fail(404, 'Categoria nu a fost găsită.');
+    return { ok: true };
+  });
+  // Ordinea categoriilor (în bara laterală, formulare și pagina de categorii): lista completă de id-uri, în noua ordine.
+  app.post('/api/categories/order', { preHandler: requireAdmin }, async (req) => {
+    const ids = idList(req.body?.ids);
+    const all = db.prepare('SELECT id FROM categories').all().map((c) => c.id);
+    if (ids.length !== all.length || !all.every((id) => ids.includes(id))) throw fail(400, 'Lista categoriilor s-a schimbat între timp. Reîncărcați pagina.');
+    tx(() => {
+      const up = db.prepare('UPDATE categories SET sort = ? WHERE id = ?');
+      ids.forEach((id, i) => up.run(i, id));
+    });
+    audit(req, 'categorii reordonate');
     return { ok: true };
   });
   app.delete('/api/categories/:id', { preHandler: requireAdmin }, async (req) => {
