@@ -174,6 +174,11 @@ De asigurat la instalare:
 <details>
 <summary><b>🛠️ Pentru dezvoltatori: structură și verificări</b></summary>
 
+### Documentație
+
+- [docs/ARHITECTURA.md](docs/ARHITECTURA.md): cum este construită aplicația, regulile de acces, semnarea și copiile de rezervă
+- [CLAUDE.md](CLAUDE.md): note și reguli pentru lucrul la cod
+
 ### Structură
 
 - `src/db.js`: schema SQLite (`node:sqlite`), datele inițiale, parolele (scrypt).
