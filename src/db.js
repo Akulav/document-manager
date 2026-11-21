@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS users (
   full_name TEXT NOT NULL,
   position TEXT NOT NULL DEFAULT '',
   email TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '', -- telefonul de serviciu, completat de administrator
   unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL,
   role TEXT NOT NULL DEFAULT 'user',
   pass_hash TEXT NOT NULL,
@@ -56,6 +57,8 @@ CREATE TABLE IF NOT EXISTS documents (
   doc_date TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   visibility TEXT NOT NULL DEFAULT 'all',
+  -- avizare: până la această dată (AAAA-LL-ZZ, inclusiv) cei care văd documentul îl pot modifica în editor
+  review_until TEXT NOT NULL DEFAULT '',
   created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -66,7 +69,14 @@ CREATE TABLE IF NOT EXISTS document_files (
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   stored TEXT NOT NULL,
-  size INTEGER NOT NULL
+  size INTEGER NOT NULL,
+  signed_by INTEGER, -- cine a încărcat această versiune semnată
+  signed_by_name TEXT, -- numele rămâne chiar dacă utilizatorul este șters
+  created_at TEXT,
+  -- editarea în pagină: fiecare salvare crește versiunea; versiunea anterioară trece în file_versions
+  version INTEGER NOT NULL DEFAULT 1,
+  edited_by_name TEXT,
+  edited_at TEXT
 );
 CREATE TABLE IF NOT EXISTS document_tags (
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -97,6 +107,7 @@ CREATE TABLE IF NOT EXISTS document_signers (
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   signed_at TEXT,
+  position INTEGER NOT NULL DEFAULT 0, -- ordinea în lanțul de semnare
   PRIMARY KEY (document_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -107,26 +118,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
   action TEXT NOT NULL,
   details TEXT NOT NULL DEFAULT ''
 );
-`);
-
-// Coloane adăugate după prima versiune; verificarea face pasul repetabil pe baze de date existente.
-function addColumn(table, column, definition) {
-  if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
-}
-addColumn('document_signers', 'position', 'INTEGER NOT NULL DEFAULT 0'); // ordinea în lanțul de semnare
-addColumn('document_files', 'signed_by', 'INTEGER'); // cine a încărcat această versiune semnată
-addColumn('document_files', 'signed_by_name', 'TEXT'); // numele rămâne chiar dacă utilizatorul este șters
-addColumn('document_files', 'created_at', 'TEXT');
-addColumn('users', 'phone', "TEXT NOT NULL DEFAULT ''"); // telefonul de serviciu, completat de administrator
-// avizare: până la această dată (AAAA-LL-ZZ, inclusiv) cei care văd documentul îl pot modifica în editor
-addColumn('documents', 'review_until', "TEXT NOT NULL DEFAULT ''");
-// editarea în pagină: fiecare salvare crește versiunea; versiunea anterioară trece în file_versions
-addColumn('document_files', 'version', 'INTEGER NOT NULL DEFAULT 1');
-addColumn('document_files', 'edited_by_name', 'TEXT');
-addColumn('document_files', 'edited_at', 'TEXT');
-db.exec(`
+-- jurnalul de audit nu se modifică niciodată: o înregistrare se poate doar șterge (curățarea, consemnată)
+CREATE TRIGGER IF NOT EXISTS audit_log_readonly BEFORE UPDATE ON audit_log
+BEGIN SELECT RAISE(ABORT, 'Jurnalul de audit nu poate fi modificat.'); END;
 CREATE TABLE IF NOT EXISTS file_versions (
   id INTEGER PRIMARY KEY,
   file_id INTEGER NOT NULL REFERENCES document_files(id) ON DELETE CASCADE,
@@ -149,6 +143,17 @@ CREATE TABLE IF NOT EXISTS absences (
 );
 CREATE INDEX IF NOT EXISTS idx_absences_user ON absences(user_id, to_date);
 `);
+
+// Bazele de date create de versiunile de dinainte de 1.0.1 nu au toate coloanele de mai sus și nu se mai
+// actualizează automat: se pornește o dată versiunea 1.0.1 (care le adaugă), apoi această versiune.
+const REQUIRED = { users: ['phone'], documents: ['review_until'], document_signers: ['position'], document_files: ['signed_by_name', 'version', 'edited_at'] };
+for (const [table, cols] of Object.entries(REQUIRED)) {
+  const have = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+  if (!cols.every((c) => have.has(c))) {
+    console.error(`Baza de date din ${DATA_DIR} provine dintr-o versiune mai veche de 1.0.1. Porniți o dată versiunea 1.0.1, apoi pe aceasta.`);
+    process.exit(1);
+  }
+}
 
 const INITIAL_PASSWORD_FILE = path.join(DATA_DIR, 'parola-initiala-admin.txt');
 

@@ -1,4 +1,18 @@
+/* Geist (SIL OFL 1.1, vezi fonts/OFL.txt), servit local: latin + latin-ext (ă â î ș ț) */
+@font-face {
+  font-family: "Geist"; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url("/fonts/geist.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Geist"; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url("/fonts/geist-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
 :root {
+  color-scheme: light;
+  --font: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Noto Sans", Arial, sans-serif;
+  --ring: 0 0 0 3px rgba(29,78,137,.18);
   --bg: #f3f5f8;
   --surface: #ffffff;
   --border: #dde2ea;
@@ -13,7 +27,9 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; }
 body {
-  font: 15px/1.5 "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+  font: 15px/1.5 var(--font);
+  font-feature-settings: "ss01" 0;
+  text-rendering: optimizeLegibility;
   background: var(--bg);
   color: var(--text);
 }
@@ -121,7 +137,6 @@ label.field > span { display: block; font-size: 13px; font-weight: 600; margin-b
 .pick { display: flex; flex-wrap: wrap; gap: 6px; }
 .pick button { border: 1px solid var(--border); background: #fff; border-radius: 999px; padding: 3px 12px; font: inherit; font-size: 14px; cursor: pointer; }
 .pick button.on { color: #fff; }
-.vis-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
 .vis-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .scroll { max-height: 190px; overflow: auto; margin-top: 6px; }
 
@@ -226,7 +241,7 @@ ul.bare { list-style: none; margin: 0; padding: 0; }
 .oc-people .person-txt .small { font-size: 12px; }
 .oc-more { border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--accent); cursor: pointer; padding: 4px 6px 0; font-weight: 600; }
 .oc-more:hover { text-decoration: underline; }
-.oc-toggle { position: absolute; left: 50%; bottom: -12px; transform: translateX(-50%); z-index: 2; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; border: 2px solid var(--line); background: #fff; color: var(--muted); font: 700 12px/18px "Segoe UI", system-ui, sans-serif; cursor: pointer; }
+.oc-toggle { position: absolute; left: 50%; bottom: -12px; transform: translateX(-50%); z-index: 2; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; border: 2px solid var(--line); background: #fff; color: var(--muted); font: 700 12px/18px var(--font); cursor: pointer; }
 .oc-toggle:hover { border-color: var(--accent); color: var(--accent); }
 .oc-toggle.closed { background: var(--accent); border-color: var(--accent); color: #fff; }
 .org-admin { display: flex; gap: 1px; }
@@ -273,7 +288,6 @@ tr.off td { color: var(--muted); }
 .modal { background: #fff; border-radius: 14px; width: 100%; max-width: 560px; box-shadow: 0 20px 50px rgba(16,24,40,.25); }
 .modal.wide { max-width: 720px; }
 .modal.xl { max-width: 1080px; }
-.form-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
 .section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin-bottom: 8px; }
 .drop { border: 2px dashed var(--border); border-radius: 10px; padding: 16px; text-align: center; background: #fafbfc; }
 .drop.over { border-color: var(--accent); background: var(--accent-soft); }
@@ -282,7 +296,6 @@ tr.off td { color: var(--muted); }
 .filelist .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* notificări și semnare */
-.nav-count { background: #e5484d; color: #fff; border-radius: 999px; font-size: 12px; padding: 0 7px; margin-left: 6px; font-weight: 700; }
 .badge.new { background: #e5484d; color: #fff; margin-right: 6px; vertical-align: 2px; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .modal-body { padding: 18px 20px; }
@@ -292,7 +305,7 @@ tr.off td { color: var(--muted); }
 .toast.err { background: var(--danger); }
 
 @media (max-width: 860px) {
-  .docs, .form-cols { grid-template-columns: minmax(0, 1fr); }
+  .docs { grid-template-columns: minmax(0, 1fr); }
   .side { position: static; }
   .topbar-in { height: auto; flex-wrap: wrap; padding: 10px 16px; gap: 8px; }
   .vis-cols, .row { grid-template-columns: 1fr; flex-direction: column; }
@@ -311,7 +324,10 @@ body { -webkit-font-smoothing: antialiased; background: linear-gradient(180deg, 
 .btn.link:disabled { color: #b6bcc6; background: none; }
 input, select, textarea { transition: border-color .12s, box-shadow .12s; }
 input:hover, select:hover, textarea:hover { border-color: #c3cad6; }
-input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(29,78,137,.15); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+html { scrollbar-color: #c3cad6 transparent; }
+.page-head h1 { font-weight: 650; }
 h1 { letter-spacing: -.2px; }
 
 .topbar { position: sticky; top: 0; z-index: 20; background: linear-gradient(90deg, #163c6a, #1d4e89 55%, #245f9f); box-shadow: 0 1px 0 rgba(0,0,0,.12), 0 4px 14px rgba(16,24,40,.12); }
@@ -371,15 +387,12 @@ tbody tr:hover td { background: #fafbfd; }
 .empty-row { text-align: center; color: var(--muted); padding: 30px 14px; }
 .nowrap { white-space: nowrap; }
 .settings { padding: 20px; max-width: 760px; }
-.settings-sub { margin: 4px 0 14px; }
-.settings-sub.tight { margin-bottom: 10px; }
 .grow2 { flex: 2 !important; }
 .pull-up { margin: -6px 0 10px; }
-.addrow.narrow { max-width: 480px; }
 .hint { margin: 8px 0 0; }
 .section-title.spaced { margin-top: 18px; }
 .scroll.short { max-height: 130px; }
-.mt4 { margin-top: 4px; } .mt6 { margin-top: 6px; } .mt10 { margin-top: 10px; } .mt24 { margin-top: 24px; } .mb0 { margin-bottom: 0; }
+.mt4 { margin-top: 4px; } .mt10 { margin-top: 10px; } .mb0 { margin-bottom: 0; }
 label.field > .input-btn { display: flex; gap: 8px; align-items: center; font-size: inherit; font-weight: 400; margin: 0; }
 .input-btn .btn { flex: 0 0 auto; }
 .toast { cursor: pointer; }

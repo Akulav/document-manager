@@ -489,7 +489,6 @@ app.addHook('onRequest', async (req) => {
 // connect-src permite, în plus, doar puntea locală FleetView (tava), prin care se face semnarea
 // cu tokenul: browserul nu mai contactează MoldSign direct, ci agentul FleetView de pe calculator.
 const SIGN_BRIDGE_ORIGIN = 'http://127.0.0.1:48625';
-const SIGN_BRIDGE_URL = SIGN_BRIDGE_ORIGIN;
 // Când editorul de documente este configurat, scriptul și cadrul (iframe) lui vin de pe serverul ONLYOFFICE.
 const csp = (o = office.officeOrigin()) =>
   `default-src 'self'; script-src 'self' 'unsafe-eval'${o ? ' ' + o : ''}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ${SIGN_BRIDGE_ORIGIN}; frame-src ${o || "'none'"}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`;
@@ -613,7 +612,7 @@ app.register(async (app) => {
     if (!validDate(from) || !validDate(to)) throw fail(400, 'Indicați datele de început și de sfârșit ale absenței.');
     if (to < from) throw fail(400, 'Data de sfârșit nu poate fi înaintea datei de început.');
     if (to < localToday()) throw fail(400, 'Absența s-a încheiat deja; indicați o perioadă actuală sau viitoare.');
-    const note = String(b.note || '').trim().slice(0, 300);
+    const note = str(b.note, 300);
     let id;
     const moved = signTurnsAround(userId, () => {
       id = lastId(db.prepare('INSERT INTO absences (user_id, kind, from_date, to_date, note) VALUES (?, ?, ?, ?, ?)').run(userId, kind, from, to, note));
@@ -837,12 +836,15 @@ app.register(async (app) => {
   app.post('/api/categories', { preHandler: requireAdmin }, async (req) => {
     const c = readCategory(req.body || {});
     const max = db.prepare('SELECT COALESCE(MAX(sort), -1) + 1 AS n FROM categories').get().n;
-    return { id: lastId(db.prepare('INSERT INTO categories (name, color, sort) VALUES (?, ?, ?)').run(c.name, c.color, max)) };
+    const id = lastId(db.prepare('INSERT INTO categories (name, color, sort) VALUES (?, ?, ?)').run(c.name, c.color, max));
+    audit(req, 'categorie adăugată', c.name);
+    return { id };
   });
   app.put('/api/categories/:id', { preHandler: requireAdmin }, async (req) => {
     const c = readCategory(req.body || {});
     const r = db.prepare('UPDATE categories SET name = ?, color = ?, sort = ? WHERE id = ?').run(c.name, c.color, c.sort, paramId(req));
     if (!r.changes) throw fail(404, 'Categoria nu a fost găsită.');
+    audit(req, 'categorie modificată', c.name);
     return { ok: true };
   });
   // Ordinea categoriilor (în bara laterală, formulare și pagina de categorii): lista completă de id-uri, în noua ordine.
@@ -858,8 +860,11 @@ app.register(async (app) => {
     return { ok: true };
   });
   app.delete('/api/categories/:id', { preHandler: requireAdmin }, async (req) => {
-    const r = db.prepare('DELETE FROM categories WHERE id = ?').run(paramId(req));
-    if (!r.changes) throw fail(404, 'Categoria nu a fost găsită.');
+    const id = paramId(req);
+    const old = db.prepare('SELECT name FROM categories WHERE id = ?').get(id);
+    if (!old) throw fail(404, 'Categoria nu a fost găsită.');
+    db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+    audit(req, 'categorie ștearsă', old.name);
     return { ok: true };
   });
   app.post('/api/tags', { preHandler: requireAdmin }, async (req) => {
@@ -867,18 +872,24 @@ app.register(async (app) => {
     const category_id = idOrNull(req.body?.category_id);
     if (!name) throw fail(400, 'Introduceți denumirea etichetei.');
     if (!db.prepare('SELECT 1 FROM categories WHERE id = ?').get(category_id)) throw fail(400, 'Categoria nu există.');
-    return { id: lastId(db.prepare('INSERT INTO tags (category_id, name) VALUES (?, ?)').run(category_id, name)) };
+    const id = lastId(db.prepare('INSERT INTO tags (category_id, name) VALUES (?, ?)').run(category_id, name));
+    audit(req, 'etichetă adăugată', name);
+    return { id };
   });
   app.put('/api/tags/:id', { preHandler: requireAdmin }, async (req) => {
     const name = str(req.body?.name, 80);
     if (!name) throw fail(400, 'Introduceți denumirea etichetei.');
     const r = db.prepare('UPDATE tags SET name = ? WHERE id = ?').run(name, paramId(req));
     if (!r.changes) throw fail(404, 'Eticheta nu a fost găsită.');
+    audit(req, 'etichetă modificată', name);
     return { ok: true };
   });
   app.delete('/api/tags/:id', { preHandler: requireAdmin }, async (req) => {
-    const r = db.prepare('DELETE FROM tags WHERE id = ?').run(paramId(req));
-    if (!r.changes) throw fail(404, 'Eticheta nu a fost găsită.');
+    const id = paramId(req);
+    const old = db.prepare('SELECT name FROM tags WHERE id = ?').get(id);
+    if (!old) throw fail(404, 'Eticheta nu a fost găsită.');
+    db.prepare('DELETE FROM tags WHERE id = ?').run(id);
+    audit(req, 'etichetă ștearsă', old.name);
     return { ok: true };
   });
 
@@ -887,20 +898,22 @@ app.register(async (app) => {
 
   app.post('/api/documents', { preHandler: requireEditor }, async (req) => {
     const { doc, saved } = await readDocForm(req);
+    let id;
     try {
-      const id = tx(() => {
+      id = tx(() => {
         const r = db
           .prepare('INSERT INTO documents (title, number, doc_date, description, visibility, review_until, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
           .run(doc.title, doc.number, doc.doc_date, doc.description, doc.visibility, doc.review_until, req.user.id);
         saveDocLinks(lastId(r), doc, saved);
         return lastId(r);
       });
-      audit(req, 'document adăugat', `#${id} ${doc.title}`);
-      return { id, mail: await notifySigners(req, id, [currentSigner(id)]) };
     } catch (e) {
       removeStored(saved.map((f) => f.stored));
       throw e;
     }
+    // după salvare fișierele aparțin documentului: o eroare la e-mail nu trebuie să le mai șteargă
+    audit(req, 'document adăugat', `#${id} ${doc.title}`);
+    return { id, mail: await notifySigners(req, id, [currentSigner(id)]) };
   });
 
   app.put('/api/documents/:id', { preHandler: requireEditor }, async (req) => {
@@ -964,7 +977,7 @@ app.register(async (app) => {
     const token = crypto.randomBytes(32).toString('hex');
     signTokens.set(sha(token), { userId: req.user.id, exp: Date.now() + SIGN_TOKEN_MS });
     audit(req, 'jeton de semnare emis');
-    return { token, bridge: SIGN_BRIDGE_URL };
+    return { token, bridge: SIGN_BRIDGE_ORIGIN };
   });
   // Apelat server-la-server de puntea FleetView ca să confirme un jeton de semnare.
   // Jetonul însuși (din corp) este autentificarea; nu se cere cookie de sesiune.
@@ -994,8 +1007,8 @@ app.register(async (app) => {
         if (!sigs.length) throw fail(400, `„${f.name}” nu conține nicio semnătură electronică.`);
         if (sigs.some((s) => s.status === 'invalid')) throw fail(400, `„${f.name}” conține o semnătură nevalidă: ${sigs.find((s) => s.status === 'invalid').problems[0]}`);
       }
-      // Nu putem valida criptografic semnătura, dar putem refuza un fișier identic cu unul deja existent
-      // (adică documentul descărcat și încărcat înapoi fără a fi semnat).
+      // Celelalte formate nu se pot verifica pe server; pentru toate refuzăm un fișier identic cu unul
+      // deja existent (adică documentul descărcat și încărcat înapoi fără a fi semnat).
       const known = new Set();
       for (const f of db.prepare('SELECT stored FROM document_files WHERE document_id = ?').all(id)) known.add(await fileHash(f.stored).catch(() => ''));
       for (const f of saved) {
@@ -1314,6 +1327,12 @@ app.register(async (app) => {
     }
     if (c.status === 2 || c.status === 6) {
       if (typeof c.url !== 'string' || !/^https?:\/\//.test(c.url)) return { error: 1 };
+      // cineva a semnat între deschiderea editorului și salvare: conținutul semnat nu se mai schimbă
+      if (f.signed_by_name || db.prepare('SELECT 1 FROM document_signers WHERE document_id = ? AND signed_at IS NOT NULL').get(f.document_id)) {
+        req.log.warn({ fileId: f.id }, 'salvare ONLYOFFICE refuzată: documentul are deja semnături');
+        office.releaseLock(f.id);
+        return { error: 1 };
+      }
       const editor = isId(users[0]) ? db.prepare('SELECT username, full_name FROM users WHERE id = ?').get(users[0]) : null;
       const stored = crypto.randomBytes(16).toString('hex');
       try {

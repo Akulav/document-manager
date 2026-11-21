@@ -151,8 +151,10 @@ const certName = (c) => field(c.subject, 'CN') || field(c.subject, 'O') || c.sub
 const validAt = (c, t) => new Date(c.validFrom) <= t && t <= new Date(c.validTo);
 
 // Lanțul de la certificatul semnatarului până la o rădăcină de încredere.
+// Certificatele intermediare din semnătură contează doar dacă sunt de autoritate (basicConstraints CA),
+// altfel orice titular al unui certificat obișnuit ar putea „emite” un certificat pe numele altcuiva.
 function buildChain(leaf, embedded, trust) {
-  const pool = [...embedded, ...trust.intermediates];
+  const pool = [...embedded.filter((c) => c.ca), ...trust.intermediates];
   const chain = [leaf];
   let cur = leaf;
   for (let i = 0; i < 10; i++) {

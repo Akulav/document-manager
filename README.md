@@ -176,11 +176,6 @@ De asigurat la instalare:
 <details>
 <summary><b>🛠️ Pentru dezvoltatori: structură și verificări</b></summary>
 
-### Documentație
-
-- [docs/ARHITECTURA.md](docs/ARHITECTURA.md): cum este construită aplicația, regulile de acces, semnarea și copiile de rezervă
-- [CLAUDE.md](CLAUDE.md): note și reguli pentru lucrul la cod
-
 ### Structură
 
 - `src/db.js`: schema SQLite (`node:sqlite`), datele inițiale, parolele (scrypt).
@@ -199,6 +194,17 @@ De asigurat la instalare:
 că pagina, scripturile și API-ul răspund.
 
 </details>
+
+## 📚 Documentație
+
+- [docs/ARHITECTURA.md](docs/ARHITECTURA.md): cum este construită aplicația, regulile de acces, semnarea și copiile de rezervă
+- [CHANGELOG.md](CHANGELOG.md): ce s-a schimbat în fiecare versiune
+- [CLAUDE.md](CLAUDE.md): note și reguli pentru lucrul la cod
+
+## 🙏 Mulțumiri
+
+Construit cu [Fastify](https://fastify.dev), [Vue 3](https://vuejs.org) și [nodemailer](https://nodemailer.com). Fontul
+[Geist](https://vercel.com/font) (SIL OFL 1.1, `public/fonts/OFL.txt`) este servit de aplicație, fără CDN.
 
 ---
 
